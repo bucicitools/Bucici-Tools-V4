@@ -250,7 +250,7 @@ function persistLocalBusiness(tenantId: string | null) {
 }
 
 // Queue for offline changes
-function queueOfflineChange(type: "tx" | "prod" | "cat" | "role", item: unknown) {
+function queueOfflineChange(type: "tx" | "prod" | "cat" | "role" | "cash" | "stock", item: unknown) {
   if (typeof window === "undefined") return;
   try {
     const key = `bucici_pending_${type}`;
@@ -329,6 +329,59 @@ export async function syncOfflineData() {
         });
       }
       localStorage.removeItem("bucici_pending_cat");
+    }
+
+    // 4. Cash entries
+    const cashRaw = localStorage.getItem("bucici_pending_cash");
+    if (cashRaw) {
+      const pendingCash: CashEntry[] = JSON.parse(cashRaw);
+      for (const c of pendingCash) {
+        await supabase.from("cash").upsert({
+          id: c.id,
+          tenant_id: c.tenantId,
+          type: c.type,
+          amount: c.amount,
+          note: c.note ?? null,
+          reset: c.reset ?? false,
+          created_at: c.createdAt,
+        });
+      }
+      localStorage.removeItem("bucici_pending_cash");
+    }
+
+    // 5. Stock movements
+    const stockRaw = localStorage.getItem("bucici_pending_stock");
+    if (stockRaw) {
+      const pendingStock: StockMovement[] = JSON.parse(stockRaw);
+      for (const s of pendingStock) {
+        await supabase.from("stock_movements").upsert({
+          id: s.id,
+          tenant_id: s.tenantId,
+          product_id: s.productId,
+          product_name: s.productName,
+          type: s.type,
+          qty: s.qty,
+          unit: s.unit,
+          note: s.note ?? null,
+          created_at: s.createdAt,
+        });
+      }
+      localStorage.removeItem("bucici_pending_stock");
+    }
+
+    // 6. Tenant roles
+    const roleRaw = localStorage.getItem("bucici_pending_role");
+    if (roleRaw) {
+      const pendingRoles: TenantRole[] = JSON.parse(roleRaw);
+      for (const r of pendingRoles) {
+        await supabase.from("tenant_roles").upsert({
+          id: r.id,
+          tenant_id: r.tenantId,
+          name: r.name,
+          permissions: r.permissions,
+        });
+      }
+      localStorage.removeItem("bucici_pending_role");
     }
   } catch {
     /* ignore sync failures until next online cycle */
@@ -453,6 +506,17 @@ async function mirrorChanges(prev: DB, next: DB) {
       }
     }
 
+    // Mirror updated transaction status (e.g. paid, void)
+    for (const tx of next.transactions) {
+      const prevTx = prev.transactions.find((x) => x.id === tx.id);
+      if (prevTx && (prevTx.status !== tx.status || prevTx.paidAt !== tx.paidAt)) {
+        await supabase
+          .from("transactions")
+          .update({ status: tx.status, created_at: tx.createdAt })
+          .eq("id", tx.id);
+      }
+    }
+
     // Mirror newly added or updated products
     const addedProds = next.products.filter(
       (p) => !prev.products.some((x) => x.id === p.id && JSON.stringify(x) === JSON.stringify(p)),
@@ -472,6 +536,12 @@ async function mirrorChanges(prev: DB, next: DB) {
       if (error) queueOfflineChange("prod", p);
     }
 
+    // Mirror product deletions
+    const removedProds = prev.products.filter((p) => !next.products.some((x) => x.id === p.id));
+    for (const p of removedProds) {
+      await supabase.from("products").delete().eq("id", p.id);
+    }
+
     // Mirror categories
     const addedCats = next.categories.filter(
       (c) => !prev.categories.some((x) => x.id === c.id && x.name === c.name),
@@ -485,7 +555,13 @@ async function mirrorChanges(prev: DB, next: DB) {
       if (error) queueOfflineChange("cat", c);
     }
 
-    // Mirror tenant roles
+    // Mirror category deletions
+    const removedCats = prev.categories.filter((c) => !next.categories.some((x) => x.id === c.id));
+    for (const c of removedCats) {
+      await supabase.from("categories").delete().eq("id", c.id);
+    }
+
+    // Mirror tenant roles (add/update)
     const addedRoles = next.roles.filter(
       (r) =>
         !prev.roles.some(
@@ -503,6 +579,44 @@ async function mirrorChanges(prev: DB, next: DB) {
         permissions: r.permissions,
       });
       if (error) queueOfflineChange("role", r);
+    }
+
+    // Mirror role deletions
+    const removedRoles = prev.roles.filter((r) => !next.roles.some((x) => x.id === r.id));
+    for (const r of removedRoles) {
+      await supabase.from("tenant_roles").delete().eq("id", r.id);
+    }
+
+    // Mirror cash entries (new only — cash entries are immutable)
+    const addedCash = next.cash.filter((c) => !prev.cash.some((x) => x.id === c.id));
+    for (const c of addedCash) {
+      const { error } = await supabase.from("cash").upsert({
+        id: c.id,
+        tenant_id: c.tenantId,
+        type: c.type,
+        amount: c.amount,
+        note: c.note ?? null,
+        reset: c.reset ?? false,
+        created_at: c.createdAt,
+      });
+      if (error) queueOfflineChange("cash", c);
+    }
+
+    // Mirror stock movements (new only — movements are immutable)
+    const addedStock = next.stock.filter((s) => !prev.stock.some((x) => x.id === s.id));
+    for (const s of addedStock) {
+      const { error } = await supabase.from("stock_movements").upsert({
+        id: s.id,
+        tenant_id: s.tenantId,
+        product_id: s.productId,
+        product_name: s.productName,
+        type: s.type,
+        qty: s.qty,
+        unit: s.unit,
+        note: s.note ?? null,
+        created_at: s.createdAt,
+      });
+      if (error) queueOfflineChange("stock", s);
     }
   } catch {
     /* noop — offline safe */
@@ -546,6 +660,7 @@ export function currentTenant(): Tenant | undefined {
     id: u.tenantId,
     businessName: "Toko Utama",
     ownerId: "",
+    ownerName: "",
     licenseCode: "",
     active: true,
     createdAt: new Date().toISOString(),
@@ -610,7 +725,6 @@ export async function hydrateFromSupabase(): Promise<void> {
     const isSA = !!roleRow && roleRow.role === "super_admin";
     const ownsTenant = tenants.some((t) => t.ownerId === p.id);
 
-    // Cari tenantId jika ini adalah Anggota
     const effectiveTenantId =
       p.tenant_id ||
       (p.id === user.id ? meta.tenant_id : undefined) ||
@@ -651,7 +765,8 @@ export async function hydrateFromSupabase(): Promise<void> {
   }));
 
   const activeUserObj = users.find((u) => u.id === user.id);
-  const activeTenantId = activeUserObj?.tenantId || tenants.find((t) => t.ownerId === user.id)?.id;
+  const activeTenantId =
+    activeUserObj?.tenantId || tenants.find((t) => t.ownerId === user.id)?.id;
 
   if (
     activeTenantId &&
@@ -662,11 +777,41 @@ export async function hydrateFromSupabase(): Promise<void> {
     void supabase.from("profiles").update({ tenant_id: activeTenantId }).eq("id", user.id);
   }
 
+  // Load local data — try tenantId key first, fall back to userId key (handles key migration)
   const local = loadLocalBusiness(activeTenantId ?? user.id);
+  if (activeTenantId && activeTenantId !== user.id) {
+    // Also check userId-keyed local data as fallback (from older sessions where tenantId wasn't set)
+    const localByUserId = loadLocalBusiness(user.id);
+    // Merge: prefer tenantId data when it exists; fall back to userId data when tenantId data is empty
+    if (!local.products?.length && localByUserId.products?.length) {
+      local.products = localByUserId.products;
+    }
+    if (!local.categories?.length && localByUserId.categories?.length) {
+      local.categories = localByUserId.categories;
+    }
+    if (!local.roles?.length && localByUserId.roles?.length) {
+      local.roles = localByUserId.roles;
+    }
+    if (!local.cash?.length && localByUserId.cash?.length) {
+      local.cash = localByUserId.cash;
+    }
+    if (!local.stock?.length && localByUserId.stock?.length) {
+      local.stock = localByUserId.stock;
+    }
+    if (!local.transactions?.length && localByUserId.transactions?.length) {
+      local.transactions = localByUserId.transactions;
+    }
+    if (!local.receipts || !Object.keys(local.receipts).length) {
+      local.receipts = localByUserId.receipts ?? {};
+    }
+    if (!local.hpp?.length && localByUserId.hpp?.length) {
+      local.hpp = localByUserId.hpp;
+    }
+  }
 
-  // Ambil data produk & transaksi dari Supabase untuk tenant aktif
+  // Ambil data dari Supabase untuk tenant aktif — Supabase is the source of truth
   if (activeTenantId) {
-    const [prodRes, catRes, txRes] = await Promise.all([
+    const [prodRes, catRes, txRes, cashRes, stockRes] = await Promise.all([
       supabase.from("products").select("*").eq("tenant_id", activeTenantId),
       supabase.from("categories").select("*").eq("tenant_id", activeTenantId),
       supabase
@@ -674,8 +819,19 @@ export async function hydrateFromSupabase(): Promise<void> {
         .select("*, transaction_items(*)")
         .eq("tenant_id", activeTenantId)
         .order("created_at", { ascending: false }),
+      supabase
+        .from("cash")
+        .select("*")
+        .eq("tenant_id", activeTenantId)
+        .order("created_at", { ascending: true }),
+      supabase
+        .from("stock_movements")
+        .select("*")
+        .eq("tenant_id", activeTenantId)
+        .order("created_at", { ascending: true }),
     ]);
 
+    // Products: Supabase wins if it has data; else keep local (offline fallback)
     if (prodRes.data && prodRes.data.length > 0) {
       local.products = prodRes.data.map((p) => ({
         id: p.id,
@@ -684,12 +840,13 @@ export async function hydrateFromSupabase(): Promise<void> {
         price: Number(p.price),
         cost: p.cost_price ? Number(p.cost_price) : undefined,
         stock: p.stock,
-        sku: p.barcode,
-        categoryId: p.category,
-        image: p.image_url,
+        sku: p.barcode ?? undefined,
+        categoryId: p.category ?? undefined,
+        image: p.image_url ?? undefined,
       }));
     }
 
+    // Categories: Supabase wins if it has data
     if (catRes.data && catRes.data.length > 0) {
       local.categories = catRes.data.map((c) => ({
         id: c.id,
@@ -698,6 +855,7 @@ export async function hydrateFromSupabase(): Promise<void> {
       }));
     }
 
+    // Transactions: Supabase wins if it has data
     if (txRes.data && txRes.data.length > 0) {
       local.transactions = txRes.data.map((t) => ({
         id: t.id,
@@ -719,7 +877,7 @@ export async function hydrateFromSupabase(): Promise<void> {
         ),
         subtotal: Number(t.total_amount),
         discount: Number(t.discount_amount || 0),
-        discountType: "rp",
+        discountType: "rp" as const,
         tax: Number(t.tax_amount || 0),
         taxPct: 0,
         total: Number(t.total_amount),
@@ -730,6 +888,99 @@ export async function hydrateFromSupabase(): Promise<void> {
         status: (t.status?.toLowerCase() as "paid" | "unpaid" | "void") || "paid",
         createdAt: t.created_at,
       }));
+    }
+
+    // Cash: Supabase wins if it has data
+    if (cashRes.data && cashRes.data.length > 0) {
+      local.cash = cashRes.data.map((c) => ({
+        id: c.id,
+        tenantId: c.tenant_id,
+        type: (c.type as "fill" | "in" | "out") || "in",
+        amount: Number(c.amount),
+        note: c.note ?? undefined,
+        reset: c.reset ?? false,
+        createdAt: c.created_at,
+      }));
+    }
+
+    // Stock movements: Supabase wins if it has data
+    if (stockRes.data && stockRes.data.length > 0) {
+      local.stock = stockRes.data.map((s) => ({
+        id: s.id,
+        tenantId: s.tenant_id,
+        productId: s.product_id ?? "",
+        productName: s.product_name,
+        type: (s.type as "in" | "out") || "in",
+        qty: Number(s.qty),
+        unit: s.unit,
+        note: s.note ?? undefined,
+        createdAt: s.created_at,
+      }));
+    }
+
+    // If Supabase products are empty but local has data, push local to Supabase now
+    // (handles recovery from previous RLS-blocked writes)
+    if ((!prodRes.data || prodRes.data.length === 0) && local.products && local.products.length > 0) {
+      void Promise.all(
+        local.products.map((p) =>
+          supabase.from("products").upsert({
+            id: p.id,
+            tenant_id: p.tenantId,
+            name: p.name,
+            price: p.price,
+            cost_price: p.cost ?? null,
+            stock: p.stock,
+            barcode: p.sku ?? null,
+            category: p.categoryId ?? null,
+            image_url: p.image ?? null,
+          }),
+        ),
+      );
+    }
+
+    // Same recovery for categories
+    if ((!catRes.data || catRes.data.length === 0) && local.categories && local.categories.length > 0) {
+      void Promise.all(
+        local.categories.map((c) =>
+          supabase.from("categories").upsert({
+            id: c.id,
+            tenant_id: c.tenantId,
+            name: c.name,
+          }),
+        ),
+      );
+    }
+
+    // Same recovery for tenant roles
+    const hasSupabaseRoles = tenantRoles.some((r) => r.tenantId === activeTenantId);
+    if (!hasSupabaseRoles && local.roles && local.roles.length > 0) {
+      void Promise.all(
+        local.roles.map((r) =>
+          supabase.from("tenant_roles").upsert({
+            id: r.id,
+            tenant_id: r.tenantId,
+            name: r.name,
+            permissions: r.permissions,
+          }),
+        ),
+      );
+    }
+
+    // Same recovery for cash
+    if ((!cashRes.data || cashRes.data.length === 0) && local.cash && local.cash.length > 0) {
+      void Promise.all(
+        local.cash.map((c) =>
+          supabase.from("cash").upsert({
+            id: c.id,
+            tenant_id: c.tenantId,
+            type: c.type,
+            amount: c.amount,
+            note: c.note ?? null,
+            reset: c.reset ?? false,
+            created_at: c.createdAt,
+          }),
+        ),
+      );
     }
   }
 
@@ -756,7 +1007,10 @@ export async function hydrateFromSupabase(): Promise<void> {
     tenants,
     licenses,
     info: info.filter((i) => !i.text.startsWith("[ROOM_LOCKS]:")),
-    roles: tenantRoles.length > 0 ? tenantRoles : (local.roles ?? []),
+    roles:
+      tenantRoles.filter((r) => r.tenantId === activeTenantId).length > 0
+        ? tenantRoles
+        : (local.roles ?? []),
     roomLocks: (() => {
       const lockPost = info.find((i) => i.text.startsWith("[ROOM_LOCKS]:"));
       if (lockPost) {
