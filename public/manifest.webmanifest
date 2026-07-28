@@ -1,0 +1,18 @@
+{
+  "name": "BUCICI · Simple Business Buddy",
+  "short_name": "BUCICI",
+  "description": "POS multi-tenant, manajemen stok, studio pemasaran AI, dan hitung modal cerdas untuk UMKM.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["standalone", "fullscreen"],
+  "orientation": "portrait",
+  "background_color": "#1e50b4",
+  "theme_color": "#1e50b4",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
