@@ -32,7 +32,31 @@ function Rekapan() {
   const paid = filtered.filter((x) => x.status === "paid");
   const omzet = paid.reduce((a, b) => a + b.total, 0);
   const uangKeluar = cash.filter((c) => c.type === "out").reduce((a, b) => a + b.amount, 0);
-  const saldo = omzet - uangKeluar;
+
+  // Saldo kas fisik: dihitung dari semua catatan kas + transaksi cash paid
+  // Logika sama persis dengan halaman Kas agar nilai konsisten
+  const saldoKas = useMemo(() => {
+    let s = 0;
+    const sorted = [...cash].sort(
+      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+    );
+    for (const c of sorted) {
+      if (c.type === "fill") {
+        if (c.reset) s = c.amount;
+        else s += c.amount;
+      } else if (c.type === "in") {
+        s += c.amount;
+      } else {
+        s -= c.amount;
+      }
+    }
+    // Tambah semua transaksi cash paid (all-time, bukan hanya periode filter)
+    // karena saldo laci adalah akumulasi sepanjang waktu
+    const cashTxs = txs.filter((x) => x.status === "paid" && x.method === "cash");
+    s += cashTxs.reduce((a, b) => a + b.total, 0);
+    return s;
+  }, [cash, txs]);
+
   const byMethod = paid.reduce<Record<string, number>>((acc, x) => {
     acc[x.method] = (acc[x.method] ?? 0) + x.total;
     return acc;
@@ -52,7 +76,9 @@ function Rekapan() {
           <button
             key={p}
             onClick={() => setPeriod(p)}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold ${period === p ? "bg-gradient-primary text-primary-foreground" : "neu-sm"}`}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold ${
+              period === p ? "bg-gradient-primary text-primary-foreground" : "neu-sm"
+            }`}
           >
             {p === "today" ? "Hari ini" : p === "7" ? "7 Hari" : p === "all" ? "Semua" : "Custom"}
           </button>
@@ -95,8 +121,9 @@ function Rekapan() {
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <Card label="Omzet" value={formatIDR(omzet)} tone="text-primary" />
-        <Card label="Uang Keluar" value={formatIDR(uangKeluar)} tone="text-destructive" />
-        <Card label="Saldo Kas" value={formatIDR(saldo)} />
+        <Card label="Uang Keluar (Kas)" value={formatIDR(uangKeluar)} tone="text-destructive" />
+        {/* Saldo Kas = saldo fisik di laci, sama seperti halaman Kas */}
+        <Card label="Saldo Kas (Laci)" value={formatIDR(saldoKas)} tone="text-success" />
         <Card label="Jumlah Transaksi" value={String(filtered.length)} />
         <Card label="Void" value={String(voidCount)} tone="text-destructive" />
       </div>
@@ -133,7 +160,8 @@ function Rekapan() {
       </div>
 
       <p className="text-xs text-muted-foreground italic">
-        📌 Seluruh Uang Keluar dicatat dari menu Kas.
+        📌 Saldo Kas Laci = akumulasi isi kas + uang masuk + cash terjual − uang keluar.
+        Nilai ini sama persis dengan yang tampil di halaman Kas.
       </p>
     </div>
   );

@@ -59,14 +59,14 @@ export const Route = createFileRoute("/api/create-member")({
           // 1. Check caller's profile
           const { data: callerProfile } = await supabaseAdmin
             .from("profiles")
-            .select("id, tenant_id, name")
+            .select("id, tenant_id, name, email")
             .eq("id", callerId)
             .maybeSingle();
 
-          // 2. Check caller's owned tenants
+          // 2. Check caller's owned tenants (by owner_id)
           const { data: ownedTenants } = await supabaseAdmin
             .from("tenants")
-            .select("id, owner_id")
+            .select("id, owner_id, owner_name")
             .eq("owner_id", callerId);
 
           // 3. Check caller's user_roles
@@ -78,41 +78,72 @@ export const Route = createFileRoute("/api/create-member")({
           const isSuperAdmin = callerRoles?.some((r) => r.role === "super_admin");
           const ownedTenant = ownedTenants?.[0];
 
-          let tenantId =
-            ownedTenant?.id || callerProfile?.tenant_id || userData.user.user_metadata?.tenant_id;
+          let tenantId: string | null =
+            ownedTenant?.id ||
+            callerProfile?.tenant_id ||
+            userData.user.user_metadata?.tenant_id ||
+            null;
 
+          // Fallback 1: super_admin gets first available tenant
           if (!tenantId && isSuperAdmin) {
-            const { data: anyTenant } = await supabaseAdmin.from("tenants").select("id").limit(1);
-            if (anyTenant?.[0]) {
-              tenantId = anyTenant[0].id;
+            const { data: anyTenant } = await supabaseAdmin
+              .from("tenants")
+              .select("id")
+              .limit(1);
+            if (anyTenant?.[0]) tenantId = anyTenant[0].id;
+          }
+
+          // Fallback 2: search all tenants for one belonging to this user
+          // (handles case where owner_id wasn't set correctly during registration)
+          if (!tenantId) {
+            const { data: allTenants } = await supabaseAdmin
+              .from("tenants")
+              .select("id, owner_id, owner_name")
+              .order("created_at", { ascending: true })
+              .limit(10);
+
+            if (allTenants && allTenants.length > 0) {
+              // Try to match by owner_name or owner_id
+              const matched = allTenants.find(
+                (t) =>
+                  t.owner_id === callerId ||
+                  (callerProfile?.name &&
+                    t.owner_name
+                      ?.toLowerCase()
+                      .includes(callerProfile.name.toLowerCase())),
+              );
+              if (matched) {
+                tenantId = matched.id;
+              } else if (allTenants.length === 1) {
+                // Only one tenant in the system — safe to assume it's theirs
+                tenantId = allTenants[0].id;
+                // Fix the owner_id if it's wrong
+                if (allTenants[0].owner_id !== callerId) {
+                  await supabaseAdmin
+                    .from("tenants")
+                    .update({ owner_id: callerId })
+                    .eq("id", tenantId);
+                }
+              }
             }
           }
 
           if (!tenantId) {
             return Response.json(
-              { error: "Tenant tidak ditemukan. Harap buat/aktifkan toko terlebih dahulu." },
+              {
+                error:
+                  "Toko belum terkonfigurasi. Pastikan sudah login dan toko sudah aktif, lalu coba lagi.",
+              },
               { status: 403 },
             );
           }
 
           // Ensure caller's profile has tenant_id set
           if (callerProfile && !callerProfile.tenant_id) {
-            await supabaseAdmin.from("profiles").update({ tenant_id: tenantId }).eq("id", callerId);
-          }
-
-          // Ensure tenant's owner_id is synced if missing
-          if (ownedTenants && ownedTenants.length === 0) {
-            const { data: tData } = await supabaseAdmin
-              .from("tenants")
-              .select("owner_id")
-              .eq("id", tenantId)
-              .maybeSingle();
-            if (
-              tData &&
-              (!tData.owner_id || tData.owner_id === "00000000-0000-0000-0000-000000000000")
-            ) {
-              await supabaseAdmin.from("tenants").update({ owner_id: callerId }).eq("id", tenantId);
-            }
+            await supabaseAdmin
+              .from("profiles")
+              .update({ tenant_id: tenantId })
+              .eq("id", callerId);
           }
 
           // Create auth user with email pre-confirmed (no verification email).
@@ -130,7 +161,7 @@ export const Route = createFileRoute("/api/create-member")({
           }
           const newId = created.user.id;
 
-          // Upsert profile with tenant_id & role_id so hydrate can identify them as member with role.
+          // Upsert profile with tenant_id & role_id
           const { error: profErr } = await supabaseAdmin
             .from("profiles")
             .upsert({ id: newId, name, email, tenant_id: tenantId, role_id: roleId ?? null });

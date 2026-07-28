@@ -24,23 +24,20 @@ function Pengaturan() {
   const [key, setKey] = useState(me?.geminiApiKey ?? "");
   const [show, setShow] = useState(false);
 
-  // State Ganti Password
   const [oldPassword, setOldPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [loadingPassword, setLoadingPassword] = useState(false);
 
-  // State Pajak Toko — baca dari localStorage agar sinkron dengan POS
   const [taxRate, setTaxRate] = useState<number>(() => {
     return Number(localStorage.getItem("bucici_tax_rate") || "0");
   });
 
-  // State Reset Transaksi
   const [showResetModal, setShowResetModal] = useState(false);
   const [resetConfirmInput, setResetConfirmInput] = useState("");
   const [loadingReset, setLoadingReset] = useState(false);
+  const [resetError, setResetError] = useState("");
 
-  // Simpan API Key Gemini
   function saveGeminiKey() {
     if (!me) return;
     db.set((n) => {
@@ -50,54 +47,30 @@ function Pengaturan() {
     toast.success(key ? "Kunci Gemini pribadi tersimpan." : "Kunci Gemini pribadi dihapus.");
   }
 
-  // Simpan Ganti Password ke Supabase (Dengan Verifikasi Password Lama)
   async function handleUpdatePassword(e: React.FormEvent) {
     e.preventDefault();
-
-    if (!oldPassword) {
-      toast.error("Password lama wajib diisi.");
-      return;
-    }
-    if (!newPassword) {
-      toast.error("Password baru tidak boleh kosong.");
-      return;
-    }
-    if (newPassword.length < 6) {
-      toast.error("Password baru minimal 6 karakter.");
-      return;
-    }
-    if (newPassword !== confirmPassword) {
-      toast.error("Konfirmasi password baru tidak cocok.");
-      return;
-    }
+    if (!oldPassword) return toast.error("Password lama wajib diisi.");
+    if (!newPassword) return toast.error("Password baru tidak boleh kosong.");
+    if (newPassword.length < 6) return toast.error("Password baru minimal 6 karakter.");
+    if (newPassword !== confirmPassword) return toast.error("Konfirmasi password baru tidak cocok.");
 
     setLoadingPassword(true);
-
     try {
-      // 1. Verifikasi Password Lama
       const { data: userData } = await supabase.auth.getUser();
       const userEmail = userData?.user?.email;
-
       if (!userEmail) {
         toast.error("Sesi tidak ditemukan. Silakan login kembali.");
-        setLoadingPassword(false);
         return;
       }
-
       const { error: signInError } = await supabase.auth.signInWithPassword({
         email: userEmail,
         password: oldPassword,
       });
-
       if (signInError) {
         toast.error("Password lama tidak sesuai.");
-        setLoadingPassword(false);
         return;
       }
-
-      // 2. Update Ke Password Baru
       const { error: updateError } = await supabase.auth.updateUser({ password: newPassword });
-
       if (updateError) {
         toast.error(`Gagal mengubah password: ${updateError.message}`);
       } else {
@@ -113,7 +86,6 @@ function Pengaturan() {
     }
   }
 
-  // Simpan Pajak Default Toko — tersimpan di localStorage agar langsung dibaca POS
   function saveTaxRate() {
     const val = Math.max(0, Math.min(100, taxRate));
     localStorage.setItem("bucici_tax_rate", val.toString());
@@ -125,62 +97,76 @@ function Pengaturan() {
     );
   }
 
-  // Hapus Seluruh Transaksi Toko (Khusus Owner) — filter by tenant_id
   async function handleResetTransactions() {
     if (resetConfirmInput !== "HAPUS") {
       toast.error("Ketik kata HAPUS dengan huruf kapital untuk mengonfirmasi.");
       return;
     }
-
     if (!tenant) {
       toast.error("Data toko tidak ditemukan.");
       return;
     }
 
     setLoadingReset(true);
+    setResetError("");
+
     try {
-      // Hapus transaction_items milik tenant ini terlebih dahulu
+      // 1. Ambil semua ID transaksi milik tenant ini
       const { data: txRows, error: fetchErr } = await supabase
         .from("transactions")
         .select("id")
         .eq("tenant_id", tenant.id);
 
-      if (fetchErr) throw fetchErr;
+      if (fetchErr) {
+        // Jika query gagal (misal RLS / tabel tidak ada), tetap lanjut hapus local state
+        console.warn("[reset] fetch transactions error:", fetchErr);
+      } else {
+        const txIds = (txRows ?? []).map((r: { id: string }) => r.id);
 
-      const txIds = (txRows ?? []).map((r: { id: string }) => r.id);
+        // 2. Hapus transaction_items (best-effort, abaikan jika tabel tidak ada)
+        if (txIds.length > 0) {
+          const { error: errItems } = await supabase
+            .from("transaction_items")
+            .delete()
+            .in("transaction_id", txIds);
+          if (errItems) {
+            console.warn("[reset] transaction_items delete error (ignored):", errItems.message);
+            // Tidak throw — lanjut hapus transaksi utama
+          }
+        }
 
-      if (txIds.length > 0) {
-        const { error: errItems } = await supabase
-          .from("transaction_items")
+        // 3. Hapus transaksi berdasarkan tenant_id
+        const { error: errTx } = await supabase
+          .from("transactions")
           .delete()
-          .in("transaction_id", txIds);
+          .eq("tenant_id", tenant.id);
 
-        if (errItems) throw errItems;
+        if (errTx) {
+          console.warn("[reset] transactions delete error:", errTx.message);
+          setResetError(
+            `Catatan: Gagal hapus dari database (${errTx.message}), tetapi data lokal sudah dibersihkan.`,
+          );
+        }
       }
 
-      // Hapus transaksi berdasarkan tenant_id
-      const { error: errTx } = await supabase
-        .from("transactions")
-        .delete()
-        .eq("tenant_id", tenant.id);
-
-      if (errTx) throw errTx;
-
-      // Bersihkan local state — hanya transaksi milik tenant ini
+      // 4. Selalu bersihkan local state (terlepas error Supabase)
       db.set((s) => {
         s.transactions = s.transactions.filter((t) => t.tenantId !== tenant.id);
-        // Bersihkan juga stock movement tipe "out" yang berasal dari penjualan
-        s.stock = s.stock.filter(
-          (stk) => stk.tenantId !== tenant.id || stk.type !== "out",
-        );
+        s.stock = s.stock.filter((stk) => stk.tenantId !== tenant.id || stk.type !== "out");
       });
 
-      toast.success("Seluruh riwayat transaksi berhasil dihapus!");
+      toast.success("Riwayat transaksi berhasil dihapus!");
       setShowResetModal(false);
       setResetConfirmInput("");
     } catch (error) {
-      const msg = error instanceof Error ? error.message : "Terjadi kesalahan saat menghapus data.";
+      const msg =
+        error instanceof Error
+          ? error.message
+          : typeof error === "object" && error !== null && "message" in error
+            ? String((error as { message: unknown }).message)
+            : "Terjadi kesalahan tidak diketahui.";
       toast.error(`Gagal: ${msg}`);
+      console.error("[reset] unexpected error:", error);
     } finally {
       setLoadingReset(false);
     }
@@ -190,7 +176,6 @@ function Pengaturan() {
 
   return (
     <div className="space-y-4 max-w-2xl pb-10">
-      {/* Header */}
       <div className="neu p-5">
         <h1 className="text-lg sm:text-xl font-bold flex items-center gap-2">
           <Shield className="text-primary" /> Pengaturan Akun
@@ -200,7 +185,7 @@ function Pengaturan() {
         </p>
       </div>
 
-      {/* Section 1: Ganti Password */}
+      {/* Ganti Password */}
       <div className="neu p-5 space-y-3">
         <div className="flex items-center gap-2">
           <Lock size={18} className="text-primary" />
@@ -250,7 +235,7 @@ function Pengaturan() {
         </form>
       </div>
 
-      {/* Section 2: Pajak Default Toko (Khusus Owner) */}
+      {/* Pajak Default */}
       {isOwner && (
         <div className="neu p-5 space-y-3">
           <div className="flex items-center gap-2">
@@ -258,8 +243,8 @@ function Pengaturan() {
             <h2 className="font-bold">Pajak Default Kasir / POS</h2>
           </div>
           <p className="text-xs text-muted-foreground">
-            Persentase pajak (%) ini akan otomatis diterapkan dan diaktifkan pada setiap transaksi
-            kasir baru. Isi <b>0</b> untuk menonaktifkan pajak default.
+            Persentase pajak (%) ini akan otomatis diterapkan pada setiap transaksi kasir baru. Isi{" "}
+            <b>0</b> untuk menonaktifkan.
           </p>
           <div className="flex items-center gap-2 max-w-xs">
             <input
@@ -287,14 +272,14 @@ function Pengaturan() {
         </div>
       )}
 
-      {/* Section 3: Kunci AI Pribadi (BYOK) */}
+      {/* Kunci AI Pribadi */}
       <div className="neu p-5 space-y-3">
         <div className="flex items-center gap-2">
           <KeyRound size={18} className="text-primary" />
           <h2 className="font-bold">Kunci AI Pribadi (BYOK)</h2>
         </div>
         <p className="text-xs text-muted-foreground">
-          Tempel Google Gemini API Key milik Anda sendiri. Format kunci diawali{" "}
+          Tempel Google Gemini API Key milik Anda. Format{" "}
           <code className="font-mono">AQ...</code> atau <code className="font-mono">AIza...</code>.
           Dapatkan gratis di{" "}
           <a
@@ -336,7 +321,7 @@ function Pengaturan() {
         )}
       </div>
 
-      {/* Section 4: Zone Bahaya / Reset Transaksi (Khusus Owner) */}
+      {/* Reset Transaksi */}
       {isOwner && (
         <div className="neu p-5 space-y-3 border-destructive/30">
           <div className="flex items-center gap-2 text-destructive">
@@ -344,8 +329,8 @@ function Pengaturan() {
             <h2 className="font-bold">Hapus / Reset Riwayat Transaksi</h2>
           </div>
           <p className="text-xs text-muted-foreground">
-            Menghapus seluruh riwayat data transaksi toko <b>{tenant?.businessName}</b> secara
-            permanen dari Supabase. Tindakan ini tidak dapat dibatalkan.
+            Menghapus seluruh riwayat transaksi toko <b>{tenant?.businessName}</b> secara permanen.
+            Tidak dapat dibatalkan.
           </p>
           <button
             onClick={() => setShowResetModal(true)}
@@ -356,7 +341,7 @@ function Pengaturan() {
         </div>
       )}
 
-      {/* Modal Konfirmasi Reset Transaksi */}
+      {/* Modal Konfirmasi Reset */}
       {showResetModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
           <div className="neu p-6 max-w-md w-full space-y-4 bg-background border border-destructive/40 rounded-2xl shadow-2xl">
@@ -366,11 +351,11 @@ function Pengaturan() {
             </div>
             <p className="text-xs text-muted-foreground leading-relaxed">
               Tindakan ini akan <strong>menghapus SELURUH riwayat transaksi</strong> toko{" "}
-              <b>{tenant?.businessName}</b> secara permanen dari database Supabase.
+              <b>{tenant?.businessName}</b> secara permanen.
             </p>
             <p className="text-xs font-semibold">
-              Ketik kata <span className="text-destructive font-mono font-bold">HAPUS</span> di
-              bawah ini untuk melanjutkan:
+              Ketik kata{" "}
+              <span className="text-destructive font-mono font-bold">HAPUS</span> untuk melanjutkan:
             </p>
             <input
               type="text"
@@ -379,11 +364,17 @@ function Pengaturan() {
               placeholder="Ketik HAPUS"
               className="w-full rounded-lg neu-inset px-3 py-2 text-sm font-bold uppercase tracking-wider text-center"
             />
+            {resetError && (
+              <div className="rounded-lg bg-warning/10 border border-warning/20 p-2 text-xs text-warning">
+                {resetError}
+              </div>
+            )}
             <div className="flex gap-2 justify-end pt-2">
               <button
                 onClick={() => {
                   setShowResetModal(false);
                   setResetConfirmInput("");
+                  setResetError("");
                 }}
                 className="px-4 py-2 rounded-xl neu text-xs font-semibold"
               >

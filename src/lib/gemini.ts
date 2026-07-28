@@ -4,7 +4,9 @@ import { currentUser } from "@/lib/store";
 
 const BASE = "https://generativelanguage.googleapis.com/v1beta/models";
 const TEXT_MODEL = "gemini-2.0-flash";
-const IMAGE_MODEL = "gemini-2.0-flash-preview-image-generation";
+// gemini-2.0-flash-exp supports native image generation (responseModalities: ["IMAGE", "TEXT"])
+// This is the most widely available model for image generation as of 2025
+const IMAGE_MODEL = "gemini-2.0-flash-exp";
 
 export function getGeminiKey(): string | undefined {
   const me = currentUser();
@@ -55,6 +57,7 @@ export interface PosterOptions {
 
 /**
  * Generate advertising poster via Gemini image generation, directly from the browser.
+ * Uses gemini-2.0-flash-exp with responseModalities: ["IMAGE", "TEXT"] for image-to-image.
  * Returns the result image as a base64 data URL (data:image/png;base64,...).
  */
 export async function generatePosterImage(opts: PosterOptions): Promise<string> {
@@ -95,7 +98,8 @@ export async function generatePosterImage(opts: PosterOptions): Promise<string> 
       },
     ],
     generationConfig: {
-      responseModalities: ["TEXT", "IMAGE"],
+      // IMAGE must be listed — this tells the model to output an image
+      responseModalities: ["IMAGE", "TEXT"],
     },
   };
 
@@ -108,10 +112,17 @@ export async function generatePosterImage(opts: PosterOptions): Promise<string> 
   if (!res.ok) {
     const errText = await res.text();
     const status = res.status;
-    if (status === 400) throw new Error("Format gambar atau prompt tidak valid. Coba gambar lain.");
+    if (status === 400)
+      throw new Error(
+        "Format gambar atau prompt tidak valid. Coba gambar lain atau sederhanakan prompt.",
+      );
     if (status === 403)
       throw new Error(
-        "API Key tidak valid atau tidak memiliki akses ke model image generation. Periksa kunci di Pengaturan.",
+        "API Key tidak valid atau tidak memiliki akses ke model image generation. Pastikan API Key dari Google AI Studio (bukan dari Google Cloud).",
+      );
+    if (status === 404)
+      throw new Error(
+        "Model image generation tidak tersedia untuk API Key ini. Pastikan API Key sudah aktif di aistudio.google.com dan mendukung model Gemini 2.0.",
       );
     if (status === 429)
       throw new Error("Kuota API Key habis atau terlalu banyak request. Coba lagi sebentar.");
@@ -124,14 +135,13 @@ export async function generatePosterImage(opts: PosterOptions): Promise<string> 
 
   const imagePart = parts.find((p) => p.inline_data?.data);
   if (!imagePart?.inline_data) {
-    // If model returned text only (e.g. safety block), surface the message
     const textMsg = parts
       .filter((p) => p.text)
       .map((p) => p.text)
       .join(" ");
     throw new Error(
       textMsg ||
-        "AI tidak mengembalikan gambar. Coba gambar produk yang berbeda atau ubah prompt.",
+        "AI tidak mengembalikan gambar. Model mungkin tidak mendukung image output untuk prompt ini. Coba gambar produk yang berbeda.",
     );
   }
 
