@@ -52,8 +52,16 @@ function POSPage() {
   const [note, setNote] = useState("");
   const [discount, setDiscount] = useState(0);
   const [discType, setDiscType] = useState<"rp" | "pct">("rp");
-  const [taxOn, setTaxOn] = useState(false);
-  const [taxPct, setTaxPct] = useState(11);
+  const [taxOn, setTaxOn] = useState(() => {
+    // Auto-aktifkan pajak jika ada default pajak tersimpan
+    const saved = Number(localStorage.getItem("bucici_tax_rate") || "0");
+    return saved > 0;
+  });
+  const [taxPct, setTaxPct] = useState(() => {
+    // Baca pajak default dari pengaturan
+    const saved = Number(localStorage.getItem("bucici_tax_rate") || "0");
+    return saved > 0 ? saved : 11;
+  });
   const [payMode, setPayMode] = useState<"now" | "later">("now");
   const [method, setMethod] = useState<"cash" | "qris" | "transfer">("cash");
   const [paidAmt, setPaidAmt] = useState(0);
@@ -357,9 +365,11 @@ function POSPage() {
               </button>
             </div>
           </div>
+
+          {/* Pajak — nilai default dari Pengaturan, bisa diubah per transaksi */}
           <div className="flex gap-2 items-center">
-            <label className="flex items-center gap-1 text-xs">
-              <input type="checkbox" checked={taxOn} onChange={(e) => setTaxOn(e.target.checked)} />{" "}
+            <label className="flex items-center gap-1 text-xs cursor-pointer">
+              <input type="checkbox" checked={taxOn} onChange={(e) => setTaxOn(e.target.checked)} />
               Pajak (%)
             </label>
             {taxOn && (
@@ -370,6 +380,9 @@ function POSPage() {
                 className="w-16 rounded-lg neu-inset px-2 py-1 text-sm"
                 placeholder="0"
               />
+            )}
+            {taxOn && (
+              <span className="text-[10px] text-muted-foreground">default dari Pengaturan</span>
             )}
           </div>
 
@@ -386,7 +399,7 @@ function POSPage() {
             )}
             {taxAmt > 0 && (
               <div className="flex justify-between">
-                <span>Pajak</span>
+                <span>Pajak {taxPct}%</span>
                 <span>{formatIDR(taxAmt)}</span>
               </div>
             )}
@@ -541,7 +554,7 @@ export function ReceiptModal({ tx, onClose }: { tx: Transaction; onClose: () => 
     lines.push({ divider: true, text: "" });
     lines.push({ cols: ["Subtotal", formatIDR(tx.subtotal)], text: "" });
     if (tx.discount > 0) lines.push({ cols: ["Diskon", `-${formatIDR(tx.discount)}`], text: "" });
-    if (tx.tax > 0) lines.push({ cols: ["Pajak", formatIDR(tx.tax)], text: "" });
+    if (tx.tax > 0) lines.push({ cols: [`Pajak ${tx.taxPct}%`, formatIDR(tx.tax)], text: "" });
     lines.push({ cols: ["TOTAL", formatIDR(tx.total)], text: "", bold: true, size: "large" });
     if (tx.paid > 0)
       lines.push({ cols: [`Bayar (${tx.method.toUpperCase()})`, formatIDR(tx.paid)], text: "" });
@@ -606,7 +619,7 @@ export function ReceiptModal({ tx, onClose }: { tx: Transaction; onClose: () => 
           )}
           {tx.tax > 0 && (
             <div className="flex justify-between">
-              <span>Pajak</span>
+              <span>Pajak {tx.taxPct}%</span>
               <span>{formatIDR(tx.tax)}</span>
             </div>
           )}

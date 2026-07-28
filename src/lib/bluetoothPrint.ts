@@ -1,14 +1,26 @@
 // Web Bluetooth ESC/POS printer helper for 58mm/80mm thermal printers.
-// Standard Serial-over-BLE profile: service 000018f0-... characteristic 00002af1-...
-const PRINT_SERVICE = "000018f0-0000-1000-8000-00805f9b34fb";
-const PRINT_CHAR = "00002af1-0000-1000-8000-00805f9b34fb";
+// Supports multiple Bluetooth printer profiles for maximum compatibility:
+// - Serial-over-BLE (Xprinter, Sewoo, etc.): service 000018f0-...
+// - Generic ESC/POS BLE (many cheap 58mm printers): 49535343-fe7d-...
+// - SPP (Serial Port Profile) fallback via acceptAllDevices
+const PRINT_SERVICES = [
+  "000018f0-0000-1000-8000-00805f9b34fb", // Xprinter/Sewoo
+  "49535343-fe7d-4ae5-8fa9-9fafd205e455", // Generic BLE serial
+  "0000ff00-0000-1000-8000-00805f9b34fb", // Common alt UUID
+  "0000ffe0-0000-1000-8000-00805f9b34fb", // HM-10 / JDY-08 modules
+];
+const PRINT_CHARS = [
+  "00002af1-0000-1000-8000-00805f9b34fb", // Xprinter/Sewoo char
+  "49535343-8841-43f4-a8d4-ecbe34729bb3", // Generic BLE serial char
+  "0000ff02-0000-1000-8000-00805f9b34fb", // Common alt char
+  "0000ffe1-0000-1000-8000-00805f9b34fb", // HM-10 / JDY-08 char
+];
 
 const ESC = 0x1b;
 const GS = 0x1d;
 const LF = 0x0a;
 
 function enc(str: string): Uint8Array {
-  // Printers typically accept CP437/ISO-8859-1; TextEncoder UTF-8 works for ASCII.
   return new TextEncoder().encode(str);
 }
 
@@ -22,6 +34,10 @@ function concat(parts: (Uint8Array | number[])[]): Uint8Array {
     o += a.length;
   }
   return out;
+}
+
+function sleep(ms: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
 
 export interface PrintLine {
@@ -75,21 +91,58 @@ interface BTAPI {
   requestDevice(o: unknown): Promise<BTDevice>;
 }
 
+/**
+ * Tries to get a writable characteristic from a connected GATT server.
+ * Iterates through known service/characteristic UUID pairs for maximum
+ * compatibility across different printer brands and BLE modules.
+ */
+async function getWritableChar(server: BTServer): Promise<BTChar> {
+  // Try known service+char pairs
+  for (let i = 0; i < PRINT_SERVICES.length; i++) {
+    try {
+      const svc = await server.getPrimaryService(PRINT_SERVICES[i]);
+      // Try matching char first, then any char in the list
+      for (const charUuid of PRINT_CHARS) {
+        try {
+          const ch = await svc.getCharacteristic(charUuid);
+          return ch;
+        } catch {
+          // try next char uuid
+        }
+      }
+    } catch {
+      // service not found, try next
+    }
+  }
+  throw new Error(
+    "Karakteristik printer tidak ditemukan. Pastikan printer dalam mode pairing dan coba lagi.",
+  );
+}
+
 export async function printBluetooth(lines: PrintLine[], width = 32): Promise<void> {
   const nav = navigator as Navigator & { bluetooth?: BTAPI };
   if (!nav.bluetooth) {
     throw new Error(
-      "Perangkat/browser ini belum mendukung Web Bluetooth. Coba Chrome/Edge di Android atau desktop.",
+      "Perangkat/browser ini belum mendukung Web Bluetooth. Gunakan Chrome atau Edge di Android/Desktop.",
     );
   }
+
+  // Accept all Bluetooth devices and declare all known services as optional
+  // This is the most compatible approach — lets the user pick their specific printer
   const device = await nav.bluetooth.requestDevice({
-    filters: [{ services: [PRINT_SERVICE] }],
-    optionalServices: [PRINT_SERVICE],
+    acceptAllDevices: true,
+    optionalServices: PRINT_SERVICES,
   });
-  const server = await device.gatt!.connect();
-  const service = await server.getPrimaryService(PRINT_SERVICE);
-  const char = await service.getCharacteristic(PRINT_CHAR);
+
+  if (!device.gatt) {
+    throw new Error("Printer tidak mendukung koneksi GATT.");
+  }
+
+  const server = await device.gatt.connect();
+  const char = await getWritableChar(server);
   const data = buildESCPOS(lines, width);
+
+  // Chunk size 180 bytes with small delay for printers with slow buffers
   const CHUNK = 180;
   for (let i = 0; i < data.length; i += CHUNK) {
     const slice = data.slice(i, i + CHUNK);
@@ -98,10 +151,13 @@ export async function printBluetooth(lines: PrintLine[], width = 32): Promise<vo
     } else {
       await char.writeValue(slice);
     }
+    // Small delay between chunks to prevent buffer overflow on slow printers
+    if (i + CHUNK < data.length) await sleep(20);
   }
+
   try {
     server.disconnect();
   } catch {
-    /* ignore */
+    /* ignore disconnect errors */
   }
 }

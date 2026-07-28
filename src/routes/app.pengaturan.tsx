@@ -13,13 +13,14 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { toast } from "sonner";
-import { currentUser, db } from "@/lib/store";
+import { currentUser, currentTenant, db } from "@/lib/store";
 import { supabase } from "@/integrations/supabase/client";
 
 export const Route = createFileRoute("/app/pengaturan")({ component: Pengaturan });
 
 function Pengaturan() {
   const me = currentUser();
+  const tenant = currentTenant();
   const [key, setKey] = useState(me?.geminiApiKey ?? "");
   const [show, setShow] = useState(false);
 
@@ -29,7 +30,7 @@ function Pengaturan() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [loadingPassword, setLoadingPassword] = useState(false);
 
-  // State Pajak Toko
+  // State Pajak Toko — baca dari localStorage agar sinkron dengan POS
   const [taxRate, setTaxRate] = useState<number>(() => {
     return Number(localStorage.getItem("bucici_tax_rate") || "0");
   });
@@ -112,44 +113,74 @@ function Pengaturan() {
     }
   }
 
-  // Simpan Pajak Default Toko
+  // Simpan Pajak Default Toko — tersimpan di localStorage agar langsung dibaca POS
   function saveTaxRate() {
-    localStorage.setItem("bucici_tax_rate", taxRate.toString());
-    toast.success("Persentase pajak default tersimpan.");
+    const val = Math.max(0, Math.min(100, taxRate));
+    localStorage.setItem("bucici_tax_rate", val.toString());
+    setTaxRate(val);
+    toast.success(
+      val > 0
+        ? `Pajak default ${val}% tersimpan. Aktif otomatis di kasir baru.`
+        : "Pajak default dinonaktifkan. Kasir baru mulai tanpa pajak.",
+    );
   }
 
-  // Hapus Seluruh Transaksi Toko (Khusus Owner)
+  // Hapus Seluruh Transaksi Toko (Khusus Owner) — filter by tenant_id
   async function handleResetTransactions() {
     if (resetConfirmInput !== "HAPUS") {
       toast.error("Ketik kata HAPUS dengan huruf kapital untuk mengonfirmasi.");
       return;
     }
 
+    if (!tenant) {
+      toast.error("Data toko tidak ditemukan.");
+      return;
+    }
+
     setLoadingReset(true);
     try {
-      // Hapus data item transaksi & transaksi dari Supabase
-      const { error: errItems } = await supabase
-        .from("transaction_items")
-        .delete()
-        .neq("id", "00000000-0000-0000-0000-000000000000");
+      // Hapus transaction_items milik tenant ini terlebih dahulu
+      const { data: txRows, error: fetchErr } = await supabase
+        .from("transactions")
+        .select("id")
+        .eq("tenant_id", tenant.id);
+
+      if (fetchErr) throw fetchErr;
+
+      const txIds = (txRows ?? []).map((r: { id: string }) => r.id);
+
+      if (txIds.length > 0) {
+        const { error: errItems } = await supabase
+          .from("transaction_items")
+          .delete()
+          .in("transaction_id", txIds);
+
+        if (errItems) throw errItems;
+      }
+
+      // Hapus transaksi berdasarkan tenant_id
       const { error: errTx } = await supabase
         .from("transactions")
         .delete()
-        .neq("id", "00000000-0000-0000-0000-000000000000");
+        .eq("tenant_id", tenant.id);
 
-      if (errTx || errItems) {
-        toast.error("Gagal menghapus transaksi dari database.");
-      } else {
-        // Clear local state
-        db.set((s) => {
-          s.transactions = [];
-        });
-        toast.success("Seluruh riwayat transaksi berhasil dihapus!");
-        setShowResetModal(false);
-        setResetConfirmInput("");
-      }
+      if (errTx) throw errTx;
+
+      // Bersihkan local state — hanya transaksi milik tenant ini
+      db.set((s) => {
+        s.transactions = s.transactions.filter((t) => t.tenantId !== tenant.id);
+        // Bersihkan juga stock movement tipe "out" yang berasal dari penjualan
+        s.stock = s.stock.filter(
+          (stk) => stk.tenantId !== tenant.id || stk.type !== "out",
+        );
+      });
+
+      toast.success("Seluruh riwayat transaksi berhasil dihapus!");
+      setShowResetModal(false);
+      setResetConfirmInput("");
     } catch (error) {
-      toast.error("Terjadi kesalahan saat menghapus data.");
+      const msg = error instanceof Error ? error.message : "Terjadi kesalahan saat menghapus data.";
+      toast.error(`Gagal: ${msg}`);
     } finally {
       setLoadingReset(false);
     }
@@ -227,11 +258,14 @@ function Pengaturan() {
             <h2 className="font-bold">Pajak Default Kasir / POS</h2>
           </div>
           <p className="text-xs text-muted-foreground">
-            Persentase pajak (%) ini akan otomatis diterapkan pada transaksi kasir baru.
+            Persentase pajak (%) ini akan otomatis diterapkan dan diaktifkan pada setiap transaksi
+            kasir baru. Isi <b>0</b> untuk menonaktifkan pajak default.
           </p>
           <div className="flex items-center gap-2 max-w-xs">
             <input
               type="number"
+              min={0}
+              max={100}
               value={taxRate === 0 ? "" : taxRate}
               onChange={(e) => setTaxRate(Number(e.target.value))}
               placeholder="0"
@@ -239,6 +273,11 @@ function Pengaturan() {
             />
             <span className="text-sm font-bold">%</span>
           </div>
+          {taxRate > 0 && (
+            <div className="rounded-lg bg-success/10 border border-success/20 p-2 text-xs text-success">
+              ✓ Kasir baru akan otomatis mengaktifkan pajak {taxRate}%.
+            </div>
+          )}
           <button
             onClick={saveTaxRate}
             className="rounded-xl bg-gradient-primary px-4 py-2 text-sm font-semibold text-primary-foreground flex items-center gap-2"
@@ -292,7 +331,7 @@ function Pengaturan() {
         </button>
         {me?.geminiApiKey && (
           <div className="rounded-lg bg-success/10 border border-success/20 p-3 text-xs text-success">
-            ✓ Kunci pribadi aktif.
+            ✓ Kunci pribadi aktif. Digunakan untuk semua fitur AI termasuk Generate Poster.
           </div>
         )}
       </div>
@@ -305,8 +344,8 @@ function Pengaturan() {
             <h2 className="font-bold">Hapus / Reset Riwayat Transaksi</h2>
           </div>
           <p className="text-xs text-muted-foreground">
-            Menghapus seluruh riwayat data transaksi toko Anda secara permanen dari Supabase.
-            Tindakan ini tidak dapat dibatalkan.
+            Menghapus seluruh riwayat data transaksi toko <b>{tenant?.businessName}</b> secara
+            permanen dari Supabase. Tindakan ini tidak dapat dibatalkan.
           </p>
           <button
             onClick={() => setShowResetModal(true)}
@@ -326,8 +365,8 @@ function Pengaturan() {
               <h3 className="font-bold text-lg">Konfirmasi Penghapusan</h3>
             </div>
             <p className="text-xs text-muted-foreground leading-relaxed">
-              Tindakan ini akan <strong>menghapus SELURUH riwayat transaksi</strong> toko secara
-              permanen dari database Supabase.
+              Tindakan ini akan <strong>menghapus SELURUH riwayat transaksi</strong> toko{" "}
+              <b>{tenant?.businessName}</b> secara permanen dari database Supabase.
             </p>
             <p className="text-xs font-semibold">
               Ketik kata <span className="text-destructive font-mono font-bold">HAPUS</span> di
