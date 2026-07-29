@@ -1,27 +1,49 @@
 // Google Gemini client with BYOK support.
-// Priority: user's own key (profile) → VITE_GEMINI_API_KEY (env)
 //
-// Key format:
-//   AQ.Ab... → newer AI Studio key, sent via x-goog-api-key header
-//   AIzaSy... → classic API key, sent as ?key= query param
+// Key storage: localStorage key "bucici_gemini_key" (simple, reliable, no store dependency)
+// Key format detection:
+//   AQ.Ab... → x-goog-api-key header
+//   AIzaSy... → ?key= query param
+//
+// Falls back to currentUser().geminiApiKey or VITE_GEMINI_API_KEY for backward compat.
 import { currentUser } from "@/lib/store";
 
 const BASE = "https://generativelanguage.googleapis.com/v1beta/models";
 const TEXT_MODEL = "gemini-2.0-flash";
 const IMAGEN_MODEL = "imagen-3.0-generate-002";
+const LS_KEY = "bucici_gemini_key";
+
+// ─── Key management ───────────────────────────────────────────────────────────
 
 export function getGeminiKey(): string | undefined {
+  // 1. Direct localStorage (set by saveGeminiKeyLocal)
+  if (typeof window !== "undefined") {
+    const lsKey = localStorage.getItem(LS_KEY);
+    if (lsKey?.trim()) return lsKey.trim();
+  }
+  // 2. Store (legacy hydration path)
   const me = currentUser();
-  if (me?.geminiApiKey) return me.geminiApiKey;
+  if (me?.geminiApiKey?.trim()) return me.geminiApiKey.trim();
+  // 3. Env var fallback
   const envKey = import.meta.env.VITE_GEMINI_API_KEY as string | undefined;
-  return envKey || undefined;
+  return envKey?.trim() || undefined;
 }
 
-/**
- * Build fetch URL and headers depending on key format.
- * AQ.Ab... → x-goog-api-key header (no query param)
- * AIzaSy... → ?key= query param (classic)
- */
+/** Save key directly to localStorage — instant, no reload needed */
+export function saveGeminiKeyLocal(key: string): void {
+  if (typeof window === "undefined") return;
+  if (key.trim()) localStorage.setItem(LS_KEY, key.trim());
+  else localStorage.removeItem(LS_KEY);
+}
+
+/** Read key from localStorage (for pre-filling input in settings) */
+export function readGeminiKeyLocal(): string {
+  if (typeof window === "undefined") return "";
+  return localStorage.getItem(LS_KEY) ?? "";
+}
+
+// ─── Request builder ──────────────────────────────────────────────────────────
+
 function buildRequest(endpoint: string, key: string): { url: string; headers: Record<string, string> } {
   const isNewFormat = key.startsWith("AQ.");
   const url = isNewFormat ? endpoint : `${endpoint}?key=${key}`;
@@ -29,6 +51,8 @@ function buildRequest(endpoint: string, key: string): { url: string; headers: Re
   if (isNewFormat) headers["x-goog-api-key"] = key;
   return { url, headers };
 }
+
+// ─── Text generation ──────────────────────────────────────────────────────────
 
 export async function askGemini(prompt: string, system?: string): Promise<string> {
   const key = getGeminiKey();
@@ -53,11 +77,8 @@ export async function askGemini(prompt: string, system?: string): Promise<string
   return text || "(kosong)";
 }
 
-/**
- * Analyze a product image and return a detailed visual description in English.
- * Uses Gemini Flash text (multimodal) which is FREE (~1500 req/day, no billing needed).
- * The description is then used as a Pollinations prompt for accurate image generation.
- */
+// ─── Product image analysis ───────────────────────────────────────────────────
+
 export async function analyzeProductImage(imageDataUrl: string): Promise<string> {
   const key = getGeminiKey();
   if (!key) throw new Error("API Key Gemini belum diatur.");
@@ -90,7 +111,7 @@ Example output: "Crispy golden-brown chicken skin skewers on bamboo sticks, glis
     const errText = await res.text();
     const status = res.status;
     if (status === 401) throw new Error("API Key tidak valid. Pastikan key sudah benar di Pengaturan.");
-    if (status === 429) throw new Error("Kuota API Key habis. Coba lagi beberapa saat.");
+    if (status === 429) throw new Error("Kuota API Key habis atau rate limit. Tunggu 1 menit lalu coba lagi.");
     throw new Error(`Gemini analyze error (${status}): ${errText.slice(0, 200)}`);
   }
 
@@ -103,6 +124,8 @@ Example output: "Crispy golden-brown chicken skin skewers on bamboo sticks, glis
   if (!text) throw new Error("Gemini tidak dapat membaca foto produk. Coba foto yang lebih jelas.");
   return text.trim();
 }
+
+// ─── Poster options ───────────────────────────────────────────────────────────
 
 export interface PosterOptions {
   imageDataUrl: string;
@@ -117,9 +140,6 @@ export interface PosterOptions {
   customPrompt?: string;
 }
 
-/**
- * Build Pollinations FLUX prompt using Gemini's visual description as the product context.
- */
 export function buildPollinationsPrompt(productDescription: string, opts: PosterOptions): string {
   return [
     `Professional advertising poster for a ${opts.productLabel} business.`,
@@ -136,9 +156,8 @@ export function buildPollinationsPrompt(productDescription: string, opts: Poster
     .join(" ");
 }
 
-/**
- * Generate poster via Pollinations FLUX (free, no key required).
- */
+// ─── Pollinations renderer ────────────────────────────────────────────────────
+
 async function generateWithPollinations(prompt: string, opts: PosterOptions): Promise<string> {
   const ratioMap: Record<string, { w: number; h: number }> = {
     "1:1":  { w: 1024, h: 1024 },
@@ -165,9 +184,8 @@ async function generateWithPollinations(prompt: string, opts: PosterOptions): Pr
   });
 }
 
-/**
- * Try Imagen 3 text-to-image (requires billing, kept as last resort).
- */
+// ─── Imagen 3 (billing required) ─────────────────────────────────────────────
+
 async function tryImagen3(key: string, opts: PosterOptions, productDescription: string): Promise<string> {
   const prompt = buildPollinationsPrompt(productDescription, opts);
   const body = {
@@ -186,13 +204,7 @@ async function tryImagen3(key: string, opts: PosterOptions, productDescription: 
   const { url, headers } = buildRequest(`${BASE}/${IMAGEN_MODEL}:predict`, key);
   const res = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
 
-  if (!res.ok) {
-    const errText = await res.text();
-    const status = res.status;
-    if (status === 403)
-      throw new Error("Imagen 3 membutuhkan billing. Menggunakan Pollinations sebagai fallback.");
-    throw new Error(`Imagen error (${status}): ${errText.slice(0, 200)}`);
-  }
+  if (!res.ok) throw new Error(`imagen_unavailable`);
 
   const data = await res.json();
   const pred = data?.predictions?.[0];
@@ -200,11 +212,11 @@ async function tryImagen3(key: string, opts: PosterOptions, productDescription: 
   return `data:${pred.mimeType ?? "image/png"};base64,${pred.bytesBase64Encoded}`;
 }
 
+// ─── Main entry point ─────────────────────────────────────────────────────────
+
 /**
- * Generate advertising poster — Hybrid approach:
- * 1. Gemini Flash text (FREE) reads photo → generates accurate visual description
- * 2. Pollinations FLUX renders poster using that description as prompt
- * 3. Falls back to Imagen 3 if available (requires billing)
+ * Hybrid: Gemini text reads photo → Pollinations FLUX renders poster.
+ * Gemini text (multimodal) is FREE ~1500 req/day, no billing needed.
  */
 export async function generatePosterImage(opts: PosterOptions): Promise<string> {
   const key = getGeminiKey();
@@ -214,17 +226,17 @@ export async function generatePosterImage(opts: PosterOptions): Promise<string> 
     );
   }
 
-  // Step 1: Gemini reads the product photo (text/multimodal, FREE)
+  // Step 1: Gemini reads product photo (text/multimodal — FREE)
   const productDescription = await analyzeProductImage(opts.imageDataUrl);
 
-  // Step 2: Build accurate prompt using Gemini's description
+  // Step 2: Build accurate prompt
   const prompt = buildPollinationsPrompt(productDescription, opts);
 
-  // Step 3: Try Imagen 3 first (higher quality), fall back to Pollinations
+  // Step 3: Try Imagen 3 first, fall back to Pollinations (free)
   try {
     return await tryImagen3(key, opts, productDescription);
   } catch {
-    // Imagen not available or no billing → use Pollinations (free)
+    // Imagen not available → use Pollinations
   }
 
   return await generateWithPollinations(prompt, opts);
