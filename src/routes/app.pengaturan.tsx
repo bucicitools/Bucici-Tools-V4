@@ -15,7 +15,6 @@ import {
 import { toast } from "sonner";
 import { currentUser, currentTenant, db } from "@/lib/store";
 import { supabase } from "@/integrations/supabase/client";
-import { getHFKey, setHFKey } from "@/lib/huggingface";
 
 export const Route = createFileRoute("/app/pengaturan")({ component: Pengaturan });
 
@@ -24,10 +23,7 @@ function Pengaturan() {
   const tenant = currentTenant();
   const [key, setKey] = useState(me?.geminiApiKey ?? "");
   const [show, setShow] = useState(false);
-
-  // Hugging Face token state (localStorage-based)
-  const [hfKey, setHfKeyState] = useState(getHFKey() ?? "");
-  const [showHf, setShowHf] = useState(false);
+  const [savingKey, setSavingKey] = useState(false);
 
   const [oldPassword, setOldPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -43,22 +39,35 @@ function Pengaturan() {
   const [loadingReset, setLoadingReset] = useState(false);
   const [resetError, setResetError] = useState("");
 
-  function saveGeminiKey() {
+  async function saveGeminiKey() {
     if (!me) return;
-    db.set((n) => {
-      const u = n.users.find((x) => x.id === me.id);
-      if (u) u.geminiApiKey = key.trim() || undefined;
-    });
-    toast.success(key ? "Kunci Gemini pribadi tersimpan." : "Kunci Gemini pribadi dihapus.");
-  }
+    setSavingKey(true);
+    try {
+      // 1. Update Supabase profiles table (persists across devices/refreshes)
+      const { data: authData } = await supabase.auth.getUser();
+      const uid = authData?.user?.id;
+      if (uid) {
+        const { error } = await supabase
+          .from("profiles")
+          .update({ gemini_api_key: key.trim() || null })
+          .eq("id", uid);
+        if (error) {
+          console.warn("[saveGeminiKey] Supabase update error:", error.message);
+        }
+      }
 
-  function saveHFKey() {
-    setHFKey(hfKey);
-    toast.success(
-      hfKey.trim()
-        ? "Token Hugging Face tersimpan. Siap generate poster!"
-        : "Token Hugging Face dihapus.",
-    );
+      // 2. Update local store so it's immediately available without reload
+      db.set((n) => {
+        const u = n.users.find((x) => x.id === me.id);
+        if (u) u.geminiApiKey = key.trim() || undefined;
+      });
+
+      toast.success(key.trim() ? "Kunci Gemini pribadi tersimpan." : "Kunci Gemini pribadi dihapus.");
+    } catch {
+      toast.error("Gagal menyimpan kunci. Coba lagi.");
+    } finally {
+      setSavingKey(false);
+    }
   }
 
   async function handleUpdatePassword(e: React.FormEvent) {
@@ -72,15 +81,26 @@ function Pengaturan() {
     try {
       const { data: userData } = await supabase.auth.getUser();
       const userEmail = userData?.user?.email;
-      if (!userEmail) { toast.error("Sesi tidak ditemukan. Silakan login kembali."); return; }
-      const { error: signInError } = await supabase.auth.signInWithPassword({ email: userEmail, password: oldPassword });
-      if (signInError) { toast.error("Password lama tidak sesuai."); return; }
+      if (!userEmail) {
+        toast.error("Sesi tidak ditemukan. Silakan login kembali.");
+        return;
+      }
+      const { error: signInError } = await supabase.auth.signInWithPassword({
+        email: userEmail,
+        password: oldPassword,
+      });
+      if (signInError) {
+        toast.error("Password lama tidak sesuai.");
+        return;
+      }
       const { error: updateError } = await supabase.auth.updateUser({ password: newPassword });
       if (updateError) {
         toast.error(`Gagal mengubah password: ${updateError.message}`);
       } else {
         toast.success("Password berhasil diperbarui!");
-        setOldPassword(""); setNewPassword(""); setConfirmPassword("");
+        setOldPassword("");
+        setNewPassword("");
+        setConfirmPassword("");
       }
     } catch {
       toast.error("Terjadi kesalahan saat memperbarui password.");
@@ -94,33 +114,80 @@ function Pengaturan() {
     localStorage.setItem("bucici_tax_rate", val.toString());
     setTaxRate(val);
     toast.success(
-      val > 0 ? `Pajak default ${val}% tersimpan.` : "Pajak default dinonaktifkan.",
+      val > 0
+        ? `Pajak default ${val}% tersimpan. Aktif otomatis di kasir baru.`
+        : "Pajak default dinonaktifkan. Kasir baru mulai tanpa pajak.",
     );
   }
 
   async function handleHapusDataKeuangan() {
-    if (resetConfirmInput !== "HAPUS") { toast.error("Ketik kata HAPUS dengan huruf kapital."); return; }
-    if (!tenant) { toast.error("Data toko tidak ditemukan."); return; }
+    if (resetConfirmInput !== "HAPUS") {
+      toast.error("Ketik kata HAPUS dengan huruf kapital untuk mengonfirmasi.");
+      return;
+    }
+    if (!tenant) {
+      toast.error("Data toko tidak ditemukan.");
+      return;
+    }
+
     setLoadingReset(true);
     setResetError("");
+
     try {
-      const { data: txRows } = await supabase.from("transactions").select("id").eq("tenant_id", tenant.id);
+      // 1. Hapus transaction_items dulu (foreign key constraint)
+      const { data: txRows } = await supabase
+        .from("transactions")
+        .select("id")
+        .eq("tenant_id", tenant.id);
+
       const txIds = (txRows ?? []).map((r: { id: string }) => r.id);
       if (txIds.length > 0) {
-        const { error: errItems } = await supabase.from("transaction_items").delete().in("transaction_id", txIds);
-        if (errItems) console.warn("[hapus] transaction_items error (ignored):", errItems.message);
+        const { error: errItems } = await supabase
+          .from("transaction_items")
+          .delete()
+          .in("transaction_id", txIds);
+        if (errItems) {
+          console.warn("[hapus] transaction_items error (ignored):", errItems.message);
+        }
       }
-      const { error: errTx } = await supabase.from("transactions").delete().eq("tenant_id", tenant.id);
-      if (errTx) { console.warn("[hapus] transactions error:", errTx.message); setResetError((p) => p + `Transaksi: ${errTx.message}. `); }
-      const { error: errCash } = await supabase.from("cash").delete().eq("tenant_id", tenant.id);
-      if (errCash) { console.warn("[hapus] cash error:", errCash.message); setResetError((p) => p + `Kas: ${errCash.message}. `); }
-      const { error: errStock } = await supabase.from("stock_movements").delete().eq("tenant_id", tenant.id);
-      if (errStock) console.warn("[hapus] stock_movements error:", errStock.message);
+
+      // 2. Hapus transaksi
+      const { error: errTx } = await supabase
+        .from("transactions")
+        .delete()
+        .eq("tenant_id", tenant.id);
+      if (errTx) {
+        console.warn("[hapus] transactions error:", errTx.message);
+        setResetError((prev) => prev + `Transaksi: ${errTx.message}. `);
+      }
+
+      // 3. Hapus catatan kas
+      const { error: errCash } = await supabase
+        .from("cash")
+        .delete()
+        .eq("tenant_id", tenant.id);
+      if (errCash) {
+        console.warn("[hapus] cash error:", errCash.message);
+        setResetError((prev) => prev + `Kas: ${errCash.message}. `);
+      }
+
+      // 4. Hapus gerakan stok
+      const { error: errStock } = await supabase
+        .from("stock_movements")
+        .delete()
+        .eq("tenant_id", tenant.id);
+      if (errStock) {
+        console.warn("[hapus] stock_movements error:", errStock.message);
+      }
+
+      // 5. Selalu bersihkan local state
       db.set((s) => {
         s.transactions = s.transactions.filter((t) => t.tenantId !== tenant.id);
         s.cash = s.cash.filter((c) => c.tenantId !== tenant.id);
         s.stock = s.stock.filter((stk) => stk.tenantId !== tenant.id);
       });
+
+      // 6. Bersihkan localStorage
       if (typeof window !== "undefined") {
         localStorage.removeItem(`bucici_db_v2_${tenant.id}`);
         localStorage.removeItem("bucici_pending_cash");
@@ -129,12 +196,19 @@ function Pengaturan() {
         localStorage.removeItem("bucici_pending_prod");
         localStorage.removeItem("bucici_pending_cat");
       }
+
       toast.success("Data keuangan berhasil dihapus!");
       setShowResetModal(false);
       setResetConfirmInput("");
     } catch (error) {
-      const msg = error instanceof Error ? error.message : "Terjadi kesalahan tidak diketahui.";
+      const msg =
+        error instanceof Error
+          ? error.message
+          : typeof error === "object" && error !== null && "message" in error
+          ? String((error as { message: unknown }).message)
+          : "Terjadi kesalahan tidak diketahui.";
       toast.error(`Gagal: ${msg}`);
+      console.error("[hapus] unexpected error:", error);
     } finally {
       setLoadingReset(false);
     }
@@ -143,174 +217,223 @@ function Pengaturan() {
   const isOwner = me?.role !== "member";
 
   return (
-    <div className="space-y-4 max-w-2xl pb-10">
-      <div className="neu p-5">
-        <h1 className="text-lg sm:text-xl font-bold flex items-center gap-2">
-          <Shield className="text-primary" /> Pengaturan Akun
+    <div className="max-w-lg mx-auto space-y-4 py-2">
+      <div className="rounded-2xl neu p-4">
+        <h1 className="text-lg font-bold flex items-center gap-2">
+          <Shield size={20} className="text-primary" /> Pengaturan Akun
         </h1>
-        <p className="text-xs sm:text-sm text-muted-foreground">Kelola preferensi, keamanan akun, dan konfigurasi toko Anda.</p>
+        <p className="text-xs text-muted-foreground mt-1">
+          Kelola preferensi, keamanan akun, dan konfigurasi toko Anda.
+        </p>
       </div>
 
       {/* Ganti Password */}
-      <div className="neu p-5 space-y-3">
-        <div className="flex items-center gap-2">
-          <Lock size={18} className="text-primary" />
-          <h2 className="font-bold">Keamanan / Ganti Password</h2>
-        </div>
+      <div className="rounded-2xl neu p-4">
+        <h2 className="font-semibold text-sm flex items-center gap-2 mb-3">
+          <Lock size={16} /> Keamanan / Ganti Password
+        </h2>
         <form onSubmit={handleUpdatePassword} className="space-y-3">
-          <div>
-            <label className="text-xs font-semibold text-muted-foreground">Password Lama</label>
-            <input type="password" value={oldPassword} onChange={(e) => setOldPassword(e.target.value)} placeholder="Masukkan password saat ini" className="w-full rounded-lg neu-inset px-3 py-2 text-sm mt-1" />
-          </div>
-          <div>
-            <label className="text-xs font-semibold text-muted-foreground">Password Baru</label>
-            <input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="Minimal 6 karakter" className="w-full rounded-lg neu-inset px-3 py-2 text-sm mt-1" />
-          </div>
-          <div>
-            <label className="text-xs font-semibold text-muted-foreground">Konfirmasi Password Baru</label>
-            <input type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} placeholder="Ulangi password baru" className="w-full rounded-lg neu-inset px-3 py-2 text-sm mt-1" />
-          </div>
-          <button type="submit" disabled={loadingPassword} className="rounded-xl bg-gradient-primary px-4 py-2 text-sm font-semibold text-primary-foreground flex items-center gap-2 disabled:opacity-50">
-            <Save size={14} /> {loadingPassword ? "Memverifikasi & Menyimpan..." : "Perbarui Password"}
+          <label className="block text-xs text-muted-foreground">
+            Password Lama
+            <input
+              value={oldPassword}
+              onChange={(e) => setOldPassword(e.target.value)}
+              type="password"
+              placeholder="Masukkan password saat ini"
+              className="w-full rounded-lg neu-inset px-3 py-2 text-sm mt-1"
+            />
+          </label>
+          <label className="block text-xs text-muted-foreground">
+            Password Baru
+            <input
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              type="password"
+              placeholder="Minimal 6 karakter"
+              className="w-full rounded-lg neu-inset px-3 py-2 text-sm mt-1"
+            />
+          </label>
+          <label className="block text-xs text-muted-foreground">
+            Konfirmasi Password Baru
+            <input
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              type="password"
+              placeholder="Ulangi password baru"
+              className="w-full rounded-lg neu-inset px-3 py-2 text-sm mt-1"
+            />
+          </label>
+          <button
+            type="submit"
+            disabled={loadingPassword}
+            className="rounded-xl bg-primary text-primary-foreground px-4 py-2 text-sm font-semibold flex items-center gap-2 disabled:opacity-50"
+          >
+            <Save size={14} />{" "}
+            {loadingPassword ? "Memverifikasi & Menyimpan..." : "Perbarui Password"}
           </button>
         </form>
       </div>
 
       {/* Pajak Default */}
       {isOwner && (
-        <div className="neu p-5 space-y-3">
+        <div className="rounded-2xl neu p-4">
+          <h2 className="font-semibold text-sm flex items-center gap-2 mb-2">
+            <Percent size={16} /> Pajak Default Kasir / POS
+          </h2>
+          <p className="text-xs text-muted-foreground mb-3">
+            Persentase pajak (%) ini akan otomatis diterapkan pada setiap transaksi kasir baru. Isi{" "}
+            <b>0</b> untuk menonaktifkan.
+          </p>
           <div className="flex items-center gap-2">
-            <Percent size={18} className="text-primary" />
-            <h2 className="font-bold">Pajak Default Kasir / POS</h2>
-          </div>
-          <p className="text-xs text-muted-foreground">Persentase pajak (%) ini akan otomatis diterapkan pada setiap transaksi kasir baru. Isi <b>0</b> untuk menonaktifkan.</p>
-          <div className="flex items-center gap-2 max-w-xs">
-            <input type="number" min={0} max={100} value={taxRate === 0 ? "" : taxRate} onChange={(e) => setTaxRate(Number(e.target.value))} placeholder="0" className="w-full rounded-lg neu-inset px-3 py-2 text-sm" />
+            <input
+              type="number"
+              min={0}
+              max={100}
+              value={taxRate}
+              onChange={(e) => setTaxRate(Number(e.target.value))}
+              placeholder="0"
+              className="w-full rounded-lg neu-inset px-3 py-2 text-sm"
+            />
             <span className="text-sm font-bold">%</span>
           </div>
           {taxRate > 0 && (
-            <div className="rounded-lg bg-success/10 border border-success/20 p-2 text-xs text-success">✓ Kasir baru akan otomatis mengaktifkan pajak {taxRate}%.</div>
+            <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-1">
+              ✓ Kasir baru akan otomatis mengaktifkan pajak {taxRate}%.
+            </p>
           )}
-          <button onClick={saveTaxRate} className="rounded-xl bg-gradient-primary px-4 py-2 text-sm font-semibold text-primary-foreground flex items-center gap-2">
+          <button
+            onClick={saveTaxRate}
+            className="mt-3 rounded-xl bg-primary text-primary-foreground px-4 py-2 text-sm font-semibold flex items-center gap-2"
+          >
             <Save size={14} /> Simpan Pajak
           </button>
         </div>
       )}
 
-      {/* Kunci AI Pribadi - Gemini (untuk fitur teks AI) */}
-      <div className="neu p-5 space-y-3">
-        <div className="flex items-center gap-2">
-          <KeyRound size={18} className="text-primary" />
-          <h2 className="font-bold">Kunci AI Pribadi (BYOK) — Gemini</h2>
-        </div>
-        <p className="text-xs text-muted-foreground">
-          Untuk fitur AI teks (analisis, saran, dll). Format <code className="font-mono">AQ...</code> atau <code className="font-mono">AIza...</code>. Dapatkan gratis di{" "}
-          <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-primary-glow underline">
-            aistudio.google.com/apikey <ExternalLink size={12} />
-          </a>.
+      {/* Kunci AI Pribadi */}
+      <div className="rounded-2xl neu p-4">
+        <h2 className="font-semibold text-sm flex items-center gap-2 mb-2">
+          <KeyRound size={16} /> Kunci AI Pribadi (BYOK)
+        </h2>
+        <p className="text-xs text-muted-foreground mb-3">
+          Tempel Google Gemini API Key milik Anda. Format{" "}
+          <code className="font-mono bg-muted px-1 rounded">AQ...</code> atau{" "}
+          <code className="font-mono bg-muted px-1 rounded">AIza...</code>.
+          Dapatkan gratis di{" "}
+          <a
+            href="https://aistudio.google.com/apikey"
+            target="_blank"
+            rel="noreferrer"
+            className="underline text-primary inline-flex items-center gap-1"
+          >
+            aistudio.google.com/apikey <ExternalLink size={10} />
+          </a>
+          .
         </p>
         <div className="relative">
-          <input value={key} onChange={(e) => setKey(e.target.value)} type={show ? "text" : "password"} placeholder="AQ.Ab8RN6... atau AIza..." className="w-full rounded-lg neu-inset px-3 py-2 pr-10 text-sm font-mono" />
-          <button type="button" onClick={() => setShow((v) => !v)} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground p-1">
+          <input
+            value={key}
+            onChange={(e) => setKey(e.target.value)}
+            type={show ? "text" : "password"}
+            placeholder="AQ.Ab8RN6... atau AIza..."
+            className="w-full rounded-lg neu-inset px-3 py-2 pr-10 text-sm font-mono"
+          />
+          <button
+            type="button"
+            onClick={() => setShow((v) => !v)}
+            className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground p-1"
+          >
             {show ? <EyeOff size={16} /> : <Eye size={16} />}
           </button>
         </div>
-        <button onClick={saveGeminiKey} className="rounded-xl bg-gradient-primary px-4 py-2 text-sm font-semibold text-primary-foreground flex items-center gap-2">
-          <Save size={14} /> Simpan Kunci Gemini
+        <button
+          onClick={saveGeminiKey}
+          disabled={savingKey}
+          className="mt-3 rounded-xl bg-primary text-primary-foreground px-4 py-2 text-sm font-semibold flex items-center gap-2 disabled:opacity-50"
+        >
+          <Save size={14} /> {savingKey ? "Menyimpan..." : "Simpan Kunci AI"}
         </button>
         {me?.geminiApiKey && (
-          <div className="rounded-lg bg-success/10 border border-success/20 p-3 text-xs text-success">✓ Kunci Gemini aktif. Digunakan untuk fitur AI teks.</div>
-        )}
-      </div>
-
-      {/* Kunci AI Pribadi - Hugging Face (untuk Generate Poster) */}
-      <div className="neu p-5 space-y-3">
-        <div className="flex items-center gap-2">
-          <KeyRound size={18} className="text-primary" />
-          <h2 className="font-bold">Kunci AI Pribadi (BYOK) — Hugging Face</h2>
-          <span className="ml-auto text-[10px] font-bold bg-green-500/20 text-green-400 border border-green-500/30 px-2 py-0.5 rounded-full">GRATIS</span>
-        </div>
-        <p className="text-xs text-muted-foreground">
-          Untuk fitur <b>Generate Poster Iklan</b>. Daftar gratis di{" "}
-          <a href="https://huggingface.co" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-primary-glow underline">
-            huggingface.co <ExternalLink size={12} />
-          </a>{" "}
-          — tidak perlu kartu kredit. Format token: <code className="font-mono">hf_...</code>
-        </p>
-        <div className="rounded-lg bg-muted/40 border border-border p-3 text-xs text-muted-foreground space-y-1">
-          <p className="font-semibold text-foreground">Cara mendapatkan token Hugging Face (gratis):</p>
-          <ol className="list-decimal list-inside space-y-0.5">
-            <li>Buka <a href="https://huggingface.co" target="_blank" rel="noopener noreferrer" className="underline">huggingface.co</a> → Sign Up (gratis, tanpa kartu kredit)</li>
-            <li>Klik foto profil → <a href="https://huggingface.co/settings/tokens" target="_blank" rel="noopener noreferrer" className="underline">Settings → Access Tokens</a></li>
-            <li>Klik <b>New token</b> → pilih tipe <b>Read</b> → Create</li>
-            <li>Salin token (format <code className="font-mono">hf_...</code>) dan tempel di bawah</li>
-          </ol>
-        </div>
-        <div className="relative">
-          <input
-            value={hfKey}
-            onChange={(e) => setHfKeyState(e.target.value)}
-            type={showHf ? "text" : "password"}
-            placeholder="hf_xxxxxxxxxxxxxxxxxxxxxxxx"
-            className="w-full rounded-lg neu-inset px-3 py-2 pr-10 text-sm font-mono"
-          />
-          <button type="button" onClick={() => setShowHf((v) => !v)} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground p-1">
-            {showHf ? <EyeOff size={16} /> : <Eye size={16} />}
-          </button>
-        </div>
-        <button onClick={saveHFKey} className="rounded-xl bg-gradient-primary px-4 py-2 text-sm font-semibold text-primary-foreground flex items-center gap-2">
-          <Save size={14} /> Simpan Token HF
-        </button>
-        {getHFKey() && (
-          <div className="rounded-lg bg-success/10 border border-success/20 p-3 text-xs text-success">✓ Token Hugging Face aktif. Generate poster iklan siap digunakan.</div>
+          <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-2">
+            ✓ Kunci pribadi aktif. Digunakan untuk semua fitur AI termasuk Generate Poster.
+          </p>
         )}
       </div>
 
       {/* Hapus Data Keuangan */}
       {isOwner && (
-        <div className="neu p-5 space-y-3 border-destructive/30">
-          <div className="flex items-center gap-2 text-destructive">
-            <Trash2 size={18} />
-            <h2 className="font-bold">Hapus Data Keuangan</h2>
-          </div>
-          <p className="text-xs text-muted-foreground">
-            Menghapus seluruh data keuangan toko <b>{tenant?.businessName}</b> secara permanen. Data yang dihapus: <b>semua transaksi, catatan kas, dan riwayat stok</b>. Data yang tidak terhapus: produk, kategori, anggota, dan role tetap aman.
+        <div className="rounded-2xl neu p-4">
+          <h2 className="font-semibold text-sm flex items-center gap-2 mb-2 text-destructive">
+            <Trash2 size={16} /> Hapus Data Keuangan
+          </h2>
+          <p className="text-xs text-muted-foreground mb-3">
+            Menghapus seluruh data keuangan toko <b>{tenant?.businessName}</b> secara permanen.
+            Data yang dihapus: semua transaksi, catatan kas, dan riwayat stok.
+            Data yang tidak terhapus: produk, kategori, anggota, dan role tetap aman.
           </p>
-          <button onClick={() => setShowResetModal(true)} className="rounded-xl bg-destructive px-4 py-2 text-sm font-semibold text-destructive-foreground flex items-center gap-2 hover:bg-destructive/90 transition-colors">
+          <button
+            onClick={() => setShowResetModal(true)}
+            className="rounded-xl bg-destructive px-4 py-2 text-sm font-semibold text-destructive-foreground flex items-center gap-2 hover:bg-destructive/90 transition-colors"
+          >
             <Trash2 size={14} /> Hapus Semua Data Keuangan
           </button>
         </div>
       )}
 
+      {/* Modal Konfirmasi Hapus Data Keuangan */}
       {showResetModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <div className="neu p-6 max-w-md w-full space-y-4 bg-background border border-destructive/40 rounded-2xl shadow-2xl">
-            <div className="flex items-center gap-3 text-destructive">
-              <AlertTriangle size={24} />
-              <h3 className="font-bold text-lg">Konfirmasi Hapus Data Keuangan</h3>
-            </div>
-            <div className="rounded-lg bg-destructive/8 border border-destructive/20 p-3 space-y-1 text-xs">
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+          <div className="rounded-2xl neu p-5 max-w-sm w-full space-y-4">
+            <h3 className="font-bold text-base flex items-center gap-2 text-destructive">
+              <AlertTriangle size={18} /> Konfirmasi Hapus Data Keuangan
+            </h3>
+
+            <div className="text-xs space-y-2">
               <p className="font-semibold text-destructive">Data yang akan DIHAPUS permanen:</p>
-              <ul className="list-disc list-inside text-muted-foreground space-y-0.5">
+              <ul className="list-disc list-inside text-muted-foreground space-y-1">
                 <li>Semua riwayat transaksi &amp; item pesanan</li>
                 <li>Semua catatan kas (isi kas, uang masuk/keluar)</li>
                 <li>Semua riwayat gerakan stok</li>
               </ul>
-              <p className="font-semibold text-success mt-2">Data yang TIDAK terhapus:</p>
-              <ul className="list-disc list-inside text-muted-foreground space-y-0.5">
+              <p className="font-semibold text-emerald-600 dark:text-emerald-400">Data yang TIDAK terhapus:</p>
+              <ul className="list-disc list-inside text-muted-foreground space-y-1">
                 <li>Produk &amp; kategori</li>
                 <li>Anggota &amp; role</li>
                 <li>Data toko &amp; lisensi</li>
               </ul>
             </div>
-            <p className="text-xs font-semibold">Ketik <span className="text-destructive font-mono font-bold">HAPUS</span> untuk melanjutkan:</p>
-            <input type="text" value={resetConfirmInput} onChange={(e) => setResetConfirmInput(e.target.value)} placeholder="Ketik HAPUS" className="w-full rounded-lg neu-inset px-3 py-2 text-sm font-bold uppercase tracking-wider text-center" />
-            {resetError && (
-              <div className="rounded-lg bg-warning/10 border border-warning/20 p-2 text-xs text-warning">⚠️ {resetError} Data lokal tetap dibersihkan.</div>
-            )}
-            <div className="flex gap-2 justify-end pt-2">
-              <button onClick={() => { setShowResetModal(false); setResetConfirmInput(""); setResetError(""); }} className="px-4 py-2 rounded-xl neu text-xs font-semibold">Batal</button>
-              <button onClick={handleHapusDataKeuangan} disabled={resetConfirmInput !== "HAPUS" || loadingReset} className="px-4 py-2 rounded-xl bg-destructive text-destructive-foreground text-xs font-bold disabled:opacity-40">
+
+            <div>
+              <p className="text-xs text-muted-foreground mb-1">
+                Ketik{" "}
+                <span className="font-bold text-destructive">HAPUS</span> untuk melanjutkan:
+              </p>
+              <input
+                value={resetConfirmInput}
+                onChange={(e) => setResetConfirmInput(e.target.value)}
+                placeholder="Ketik HAPUS"
+                className="w-full rounded-lg neu-inset px-3 py-2 text-sm font-bold uppercase tracking-wider text-center"
+              />
+              {resetError && (
+                <p className="text-xs text-amber-600 mt-1">⚠️ {resetError} Data lokal tetap dibersihkan.</p>
+              )}
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => {
+                  setShowResetModal(false);
+                  setResetConfirmInput("");
+                  setResetError("");
+                }}
+                className="px-4 py-2 rounded-xl neu text-xs font-semibold"
+              >
+                Batal
+              </button>
+              <button
+                onClick={handleHapusDataKeuangan}
+                disabled={loadingReset}
+                className="flex-1 rounded-xl bg-destructive text-destructive-foreground px-4 py-2 text-xs font-semibold disabled:opacity-50"
+              >
                 {loadingReset ? "Menghapus..." : "Ya, Hapus Data Keuangan"}
               </button>
             </div>
