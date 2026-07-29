@@ -15,13 +15,15 @@ import {
 import { toast } from "sonner";
 import { currentUser, currentTenant, db } from "@/lib/store";
 import { supabase } from "@/integrations/supabase/client";
+import { saveGeminiKeyLocal, readGeminiKeyLocal } from "@/lib/gemini";
 
 export const Route = createFileRoute("/app/pengaturan")({ component: Pengaturan });
 
 function Pengaturan() {
   const me = currentUser();
   const tenant = currentTenant();
-  const [key, setKey] = useState(me?.geminiApiKey ?? "");
+  // Read from localStorage directly — most reliable source
+  const [key, setKey] = useState(() => readGeminiKeyLocal() || me?.geminiApiKey || "");
   const [show, setShow] = useState(false);
   const [savingKey, setSavingKey] = useState(false);
 
@@ -40,29 +42,34 @@ function Pengaturan() {
   const [resetError, setResetError] = useState("");
 
   async function saveGeminiKey() {
-    if (!me) return;
     setSavingKey(true);
     try {
-      // 1. Update Supabase profiles table (persists across devices/refreshes)
-      const { data: authData } = await supabase.auth.getUser();
-      const uid = authData?.user?.id;
-      if (uid) {
-        const { error } = await supabase
-          .from("profiles")
-          .update({ gemini_api_key: key.trim() || null })
-          .eq("id", uid);
-        if (error) {
-          console.warn("[saveGeminiKey] Supabase update error:", error.message);
-        }
+      // 1. Save to localStorage immediately (used by getGeminiKey())
+      saveGeminiKeyLocal(key);
+
+      // 2. Also update store (in-memory)
+      if (me) {
+        db.set((n) => {
+          const u = n.users.find((x) => x.id === me.id);
+          if (u) u.geminiApiKey = key.trim() || undefined;
+        });
       }
 
-      // 2. Update local store so it's immediately available without reload
-      db.set((n) => {
-        const u = n.users.find((x) => x.id === me.id);
-        if (u) u.geminiApiKey = key.trim() || undefined;
-      });
+      // 3. Try persist to Supabase profiles (best effort)
+      try {
+        const { data: authData } = await supabase.auth.getUser();
+        const uid = authData?.user?.id;
+        if (uid) {
+          await supabase
+            .from("profiles")
+            .update({ gemini_api_key: key.trim() || null })
+            .eq("id", uid);
+        }
+      } catch {
+        // Non-fatal: localStorage is the source of truth
+      }
 
-      toast.success(key.trim() ? "Kunci Gemini pribadi tersimpan." : "Kunci Gemini pribadi dihapus.");
+      toast.success(key.trim() ? "Kunci Gemini tersimpan! Siap digunakan." : "Kunci Gemini dihapus.");
     } catch {
       toast.error("Gagal menyimpan kunci. Coba lagi.");
     } finally {
@@ -134,7 +141,6 @@ function Pengaturan() {
     setResetError("");
 
     try {
-      // 1. Hapus transaction_items dulu (foreign key constraint)
       const { data: txRows } = await supabase
         .from("transactions")
         .select("id")
@@ -146,48 +152,23 @@ function Pengaturan() {
           .from("transaction_items")
           .delete()
           .in("transaction_id", txIds);
-        if (errItems) {
-          console.warn("[hapus] transaction_items error (ignored):", errItems.message);
-        }
+        if (errItems) console.warn("[hapus] transaction_items error (ignored):", errItems.message);
       }
 
-      // 2. Hapus transaksi
-      const { error: errTx } = await supabase
-        .from("transactions")
-        .delete()
-        .eq("tenant_id", tenant.id);
-      if (errTx) {
-        console.warn("[hapus] transactions error:", errTx.message);
-        setResetError((prev) => prev + `Transaksi: ${errTx.message}. `);
-      }
+      const { error: errTx } = await supabase.from("transactions").delete().eq("tenant_id", tenant.id);
+      if (errTx) setResetError((prev) => prev + `Transaksi: ${errTx.message}. `);
 
-      // 3. Hapus catatan kas
-      const { error: errCash } = await supabase
-        .from("cash")
-        .delete()
-        .eq("tenant_id", tenant.id);
-      if (errCash) {
-        console.warn("[hapus] cash error:", errCash.message);
-        setResetError((prev) => prev + `Kas: ${errCash.message}. `);
-      }
+      const { error: errCash } = await supabase.from("cash").delete().eq("tenant_id", tenant.id);
+      if (errCash) setResetError((prev) => prev + `Kas: ${errCash.message}. `);
 
-      // 4. Hapus gerakan stok
-      const { error: errStock } = await supabase
-        .from("stock_movements")
-        .delete()
-        .eq("tenant_id", tenant.id);
-      if (errStock) {
-        console.warn("[hapus] stock_movements error:", errStock.message);
-      }
+      await supabase.from("stock_movements").delete().eq("tenant_id", tenant.id);
 
-      // 5. Selalu bersihkan local state
       db.set((s) => {
         s.transactions = s.transactions.filter((t) => t.tenantId !== tenant.id);
         s.cash = s.cash.filter((c) => c.tenantId !== tenant.id);
         s.stock = s.stock.filter((stk) => stk.tenantId !== tenant.id);
       });
 
-      // 6. Bersihkan localStorage
       if (typeof window !== "undefined") {
         localStorage.removeItem(`bucici_db_v2_${tenant.id}`);
         localStorage.removeItem("bucici_pending_cash");
@@ -201,20 +182,15 @@ function Pengaturan() {
       setShowResetModal(false);
       setResetConfirmInput("");
     } catch (error) {
-      const msg =
-        error instanceof Error
-          ? error.message
-          : typeof error === "object" && error !== null && "message" in error
-          ? String((error as { message: unknown }).message)
-          : "Terjadi kesalahan tidak diketahui.";
+      const msg = error instanceof Error ? error.message : "Terjadi kesalahan tidak diketahui.";
       toast.error(`Gagal: ${msg}`);
-      console.error("[hapus] unexpected error:", error);
     } finally {
       setLoadingReset(false);
     }
   }
 
   const isOwner = me?.role !== "member";
+  const activeKey = readGeminiKeyLocal() || me?.geminiApiKey;
 
   return (
     <div className="max-w-lg mx-auto space-y-4 py-2">
@@ -353,9 +329,13 @@ function Pengaturan() {
         >
           <Save size={14} /> {savingKey ? "Menyimpan..." : "Simpan Kunci AI"}
         </button>
-        {me?.geminiApiKey && (
+        {activeKey ? (
           <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-2">
-            ✓ Kunci pribadi aktif. Digunakan untuk semua fitur AI termasuk Generate Poster.
+            ✓ Kunci aktif ({activeKey.slice(0, 8)}...). Digunakan untuk semua fitur AI.
+          </p>
+        ) : (
+          <p className="text-xs text-amber-500 mt-2">
+            ⚠ Belum ada kunci aktif. Isi dan simpan key di atas.
           </p>
         )}
       </div>
@@ -369,7 +349,6 @@ function Pengaturan() {
           <p className="text-xs text-muted-foreground mb-3">
             Menghapus seluruh data keuangan toko <b>{tenant?.businessName}</b> secara permanen.
             Data yang dihapus: semua transaksi, catatan kas, dan riwayat stok.
-            Data yang tidak terhapus: produk, kategori, anggota, dan role tetap aman.
           </p>
           <button
             onClick={() => setShowResetModal(true)}
@@ -380,33 +359,24 @@ function Pengaturan() {
         </div>
       )}
 
-      {/* Modal Konfirmasi Hapus Data Keuangan */}
+      {/* Modal Konfirmasi */}
       {showResetModal && (
         <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
           <div className="rounded-2xl neu p-5 max-w-sm w-full space-y-4">
             <h3 className="font-bold text-base flex items-center gap-2 text-destructive">
               <AlertTriangle size={18} /> Konfirmasi Hapus Data Keuangan
             </h3>
-
             <div className="text-xs space-y-2">
               <p className="font-semibold text-destructive">Data yang akan DIHAPUS permanen:</p>
               <ul className="list-disc list-inside text-muted-foreground space-y-1">
                 <li>Semua riwayat transaksi &amp; item pesanan</li>
-                <li>Semua catatan kas (isi kas, uang masuk/keluar)</li>
+                <li>Semua catatan kas</li>
                 <li>Semua riwayat gerakan stok</li>
               </ul>
-              <p className="font-semibold text-emerald-600 dark:text-emerald-400">Data yang TIDAK terhapus:</p>
-              <ul className="list-disc list-inside text-muted-foreground space-y-1">
-                <li>Produk &amp; kategori</li>
-                <li>Anggota &amp; role</li>
-                <li>Data toko &amp; lisensi</li>
-              </ul>
             </div>
-
             <div>
               <p className="text-xs text-muted-foreground mb-1">
-                Ketik{" "}
-                <span className="font-bold text-destructive">HAPUS</span> untuk melanjutkan:
+                Ketik <span className="font-bold text-destructive">HAPUS</span> untuk melanjutkan:
               </p>
               <input
                 value={resetConfirmInput}
@@ -414,17 +384,11 @@ function Pengaturan() {
                 placeholder="Ketik HAPUS"
                 className="w-full rounded-lg neu-inset px-3 py-2 text-sm font-bold uppercase tracking-wider text-center"
               />
-              {resetError && (
-                <p className="text-xs text-amber-600 mt-1">⚠️ {resetError} Data lokal tetap dibersihkan.</p>
-              )}
+              {resetError && <p className="text-xs text-amber-600 mt-1">⚠️ {resetError}</p>}
             </div>
             <div className="flex gap-2">
               <button
-                onClick={() => {
-                  setShowResetModal(false);
-                  setResetConfirmInput("");
-                  setResetError("");
-                }}
+                onClick={() => { setShowResetModal(false); setResetConfirmInput(""); setResetError(""); }}
                 className="px-4 py-2 rounded-xl neu text-xs font-semibold"
               >
                 Batal
