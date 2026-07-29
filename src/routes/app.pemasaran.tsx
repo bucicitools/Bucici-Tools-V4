@@ -11,7 +11,7 @@ const QUOTA_KEY = "bucici_poster_quota";
 const DAILY_LIMIT = 10;
 
 interface QuotaRecord {
-  date: string; // YYYY-MM-DD
+  date: string;
   count: number;
 }
 
@@ -75,11 +75,11 @@ const RATIOS = [
 ];
 
 const LOADING_STEPS = [
-  "Membaca foto produk...",
-  "Menganalisis komposisi...",
-  "Menerapkan gaya desain...",
-  "Menyusun tipografi & teks...",
-  "Merender hasil final...",
+  "Gemini membaca foto produk...",
+  "Menganalisis detail visual...",
+  "Membangun prompt poster...",
+  "Merender desain poster...",
+  "Finishing touches...",
 ];
 
 // ─── Komponen utama ──────────────────────────────────────────────────────────
@@ -100,7 +100,6 @@ function Pemasaran() {
   const [result, setResult]     = useState<string | null>(null);
   const [quotaUsed, setQuotaUsed] = useState(0);
 
-  // Baca kuota saat mount
   useEffect(() => {
     setQuotaUsed(getQuota().count);
   }, []);
@@ -148,7 +147,10 @@ function Pemasaran() {
 
     setLoading(true); setResult(null); setStepIdx(0);
     let idx = 0;
-    const iv = setInterval(() => { idx = Math.min(idx + 1, LOADING_STEPS.length - 1); setStepIdx(idx); }, 3000);
+    const iv = setInterval(() => {
+      idx = Math.min(idx + 1, LOADING_STEPS.length - 1);
+      setStepIdx(idx);
+    }, 3000);
 
     try {
       const dataUrl = await generatePosterImage({
@@ -186,17 +188,14 @@ function Pemasaran() {
             <Sparkles className="text-purple-400" /> Studio Poster AI
           </h1>
           <p className="text-xs sm:text-sm text-slate-400 mt-0.5">
-            Generate poster iklan dari foto produk · Powered by Gemini AI (image-to-image)
+            Gemini membaca foto produk → FLUX render poster · Akurat & Gratis
           </p>
         </div>
-        {/* Indikator kuota */}
         {hasKey && (
           <div className={`rounded-xl px-3 py-1.5 text-xs font-semibold flex items-center gap-1.5 ${
-            quotaLeft > 3
-              ? "bg-emerald-500/20 text-emerald-300"
-              : quotaLeft > 0
-              ? "bg-amber-500/20 text-amber-300"
-              : "bg-red-500/20 text-red-300"
+            quotaLeft > 3 ? "bg-emerald-500/20 text-emerald-300"
+            : quotaLeft > 0 ? "bg-amber-500/20 text-amber-300"
+            : "bg-red-500/20 text-red-300"
           }`}>
             <Sparkles size={12} />
             {quotaLeft > 0 ? `Kuota: ${quotaLeft}/${DAILY_LIMIT} hari ini` : "Kuota habis — reset besok"}
@@ -204,7 +203,7 @@ function Pemasaran() {
         )}
       </div>
 
-      {/* Banner: belum ada key */}
+      {/* Banner belum ada key */}
       {!hasKey && (
         <div className="mb-4 flex items-start gap-3 rounded-2xl bg-amber-500/10 border border-amber-500/30 p-4">
           <AlertCircle className="text-amber-400 mt-0.5 shrink-0" size={18} />
@@ -228,7 +227,6 @@ function Pemasaran() {
       <div className="grid grid-cols-1 lg:grid-cols-[360px_1fr] gap-4">
         {/* Panel kiri */}
         <div className="space-y-3">
-          {/* Upload foto */}
           <div className="rounded-2xl bg-white/5 border border-white/10 p-4 space-y-2">
             <p className="text-xs font-semibold text-slate-300 uppercase tracking-wide">Foto Produk</p>
             <label className="block cursor-pointer">
@@ -241,7 +239,6 @@ function Pemasaran() {
             {img && <img src={img} alt="Preview" className="rounded-lg h-28 w-full object-cover border border-white/10" />}
           </div>
 
-          {/* Kategori & Gaya */}
           <div className="rounded-2xl bg-white/5 border border-white/10 p-4 space-y-3">
             <p className="text-xs font-semibold text-slate-300 uppercase tracking-wide">Kategori & Gaya</p>
             <F l="Jenis Bisnis">
@@ -261,7 +258,6 @@ function Pemasaran() {
             </F>
           </div>
 
-          {/* Teks poster */}
           <div className="rounded-2xl bg-white/5 border border-white/10 p-4 space-y-3">
             <p className="text-xs font-semibold text-slate-300 uppercase tracking-wide">Teks Poster</p>
             <F l="Judul / Nama Produk"><input value={title} onChange={(e) => setTitle(e.target.value)} className="inp" placeholder="Misal: Sate Kulit Kriuk" /></F>
@@ -281,18 +277,18 @@ function Pemasaran() {
             className="w-full rounded-xl bg-gradient-to-r from-fuchsia-600 via-purple-600 to-indigo-600 py-3 font-bold flex items-center justify-center gap-2 disabled:opacity-40 transition"
           >
             {loading ? <Loader2 className="animate-spin" size={16} /> : <Sparkles size={16} />}
-            {loading
-              ? "Generating poster..."
-              : !hasKey
-              ? "Perlu API Key Gemini"
-              : quotaLeft <= 0
-              ? "Kuota habis hari ini"
+            {loading ? "Generating poster..."
+              : !hasKey ? "Perlu API Key Gemini"
+              : quotaLeft <= 0 ? "Kuota habis hari ini"
               : "Generate Poster Iklan"}
           </button>
 
           {hasKey && (
             <p className="text-center text-xs text-slate-500">
-              Sisa kuota hari ini: <span className={quotaLeft > 0 ? "text-emerald-400 font-semibold" : "text-red-400 font-semibold"}>{quotaLeft}</span>/{DAILY_LIMIT}
+              Sisa kuota hari ini:{" "}
+              <span className={quotaLeft > 0 ? "text-emerald-400 font-semibold" : "text-red-400 font-semibold"}>
+                {quotaLeft}
+              </span>/{DAILY_LIMIT}
             </p>
           )}
         </div>
@@ -306,7 +302,7 @@ function Pemasaran() {
                 <Sparkles className="absolute inset-0 m-auto text-purple-300" size={24} />
               </div>
               <div className="text-sm font-semibold text-fuchsia-200">{LOADING_STEPS[stepIdx]}</div>
-              <div className="text-xs text-slate-400">Mohon tunggu sekitar 15–30 detik</div>
+              <div className="text-xs text-slate-400">Mohon tunggu sekitar 20–40 detik</div>
               <div className="flex gap-1">
                 {LOADING_STEPS.map((_, i) => (
                   <div key={i} className={`h-1 w-6 rounded-full transition-all ${i <= stepIdx ? "bg-purple-400" : "bg-white/10"}`} />
