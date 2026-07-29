@@ -52,6 +52,31 @@ function buildRequest(endpoint: string, key: string): { url: string; headers: Re
   return { url, headers };
 }
 
+// ─── Retry helper ─────────────────────────────────────────────────────────────
+
+/** Sleep for ms milliseconds */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Fetch with one automatic retry on HTTP 429.
+ * Gemini Free Tier enforces per-minute rate limits that reset after ~60 seconds.
+ * Retrying once after a short wait resolves most transient 429s without user action.
+ */
+async function fetchWithRetry(
+  url: string,
+  init: RequestInit,
+  retryDelayMs = 65_000,
+): Promise<Response> {
+  const res = await fetch(url, init);
+  if (res.status !== 429) return res;
+
+  // First attempt hit rate limit — wait then retry once
+  await sleep(retryDelayMs);
+  return fetch(url, init);
+}
+
 // ─── Text generation ──────────────────────────────────────────────────────────
 
 export async function askGemini(prompt: string, system?: string): Promise<string> {
@@ -64,9 +89,10 @@ export async function askGemini(prompt: string, system?: string): Promise<string
     ...(system ? { systemInstruction: { role: "system", parts: [{ text: system }] } } : {}),
   };
   const { url, headers } = buildRequest(`${BASE}/${TEXT_MODEL}:generateContent`, key);
-  const res = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
+  const res = await fetchWithRetry(url, { method: "POST", headers, body: JSON.stringify(body) });
   if (!res.ok) {
     const t = await res.text();
+    if (res.status === 429) throw new Error("Rate limit Gemini. Tunggu 1 menit lalu coba lagi.");
     throw new Error(`Gemini error ${res.status}: ${t.slice(0, 200)}`);
   }
   const data = await res.json();
@@ -105,13 +131,15 @@ Example output: "Crispy golden-brown chicken skin skewers on bamboo sticks, glis
   };
 
   const { url, headers } = buildRequest(`${BASE}/${TEXT_MODEL}:generateContent`, key);
-  const res = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
+
+  // fetchWithRetry handles transient 429 rate limits automatically (waits 65s then retries once)
+  const res = await fetchWithRetry(url, { method: "POST", headers, body: JSON.stringify(body) });
 
   if (!res.ok) {
     const errText = await res.text();
     const status = res.status;
-    if (status === 401) throw new Error("API Key tidak valid. Pastikan key sudah benar di Pengaturan.");
-    if (status === 429) throw new Error("Kuota API Key habis atau rate limit. Tunggu 1 menit lalu coba lagi.");
+    if (status === 401) throw new Error("API Key tidak valid. Pastikan key sudah benar di Pengaturan → Kunci AI Pribadi.");
+    if (status === 429) throw new Error("Rate limit Gemini masih aktif setelah retry. Tunggu beberapa menit lalu coba lagi.");
     throw new Error(`Gemini analyze error (${status}): ${errText.slice(0, 200)}`);
   }
 
@@ -217,6 +245,7 @@ async function tryImagen3(key: string, opts: PosterOptions, productDescription: 
 /**
  * Hybrid: Gemini text reads photo → Pollinations FLUX renders poster.
  * Gemini text (multimodal) is FREE ~1500 req/day, no billing needed.
+ * Auto-retries once on 429 rate limit (waits 65s) before failing.
  */
 export async function generatePosterImage(opts: PosterOptions): Promise<string> {
   const key = getGeminiKey();
@@ -226,7 +255,7 @@ export async function generatePosterImage(opts: PosterOptions): Promise<string> 
     );
   }
 
-  // Step 1: Gemini reads product photo (text/multimodal — FREE)
+  // Step 1: Gemini reads product photo (text/multimodal — FREE, with auto-retry on 429)
   const productDescription = await analyzeProductImage(opts.imageDataUrl);
 
   // Step 2: Build accurate prompt
