@@ -75,10 +75,10 @@ const RATIOS = [
 ];
 
 const LOADING_STEPS = [
-  "Gemini membaca foto produk...",
-  "Menganalisis detail visual...",
-  "Membangun prompt poster...",
-  "Merender desain poster...",
+  "Mengirim foto produk ke Gemini AI...",
+  "AI membaca & memahami produk...",
+  "Menerapkan style desain...",
+  "Merender poster iklan...",
   "Finishing touches...",
 ];
 
@@ -150,7 +150,7 @@ function Pemasaran() {
     const iv = setInterval(() => {
       idx = Math.min(idx + 1, LOADING_STEPS.length - 1);
       setStepIdx(idx);
-    }, 3000);
+    }, 4000);
 
     try {
       const dataUrl = await generatePosterImage({
@@ -188,7 +188,7 @@ function Pemasaran() {
             <Sparkles className="text-purple-400" /> Studio Poster AI
           </h1>
           <p className="text-xs sm:text-sm text-slate-400 mt-0.5">
-            Gemini membaca foto produk → FLUX render poster · Akurat & Gratis
+            Upload foto produk → Gemini AI ubah jadi poster iklan profesional
           </p>
         </div>
         {hasKey && (
@@ -277,7 +277,7 @@ function Pemasaran() {
             className="w-full rounded-xl bg-gradient-to-r from-fuchsia-600 via-purple-600 to-indigo-600 py-3 font-bold flex items-center justify-center gap-2 disabled:opacity-40 transition"
           >
             {loading ? <Loader2 className="animate-spin" size={16} /> : <Sparkles size={16} />}
-            {loading ? "Generating poster..."
+            {loading ? "AI sedang membuat poster..."
               : !hasKey ? "Perlu API Key Gemini"
               : quotaLeft <= 0 ? "Kuota habis hari ini"
               : "Generate Poster Iklan"}
