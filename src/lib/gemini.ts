@@ -5,7 +5,6 @@ import { currentUser } from "@/lib/store";
 const BASE = "https://generativelanguage.googleapis.com/v1beta/models";
 const TEXT_MODEL = "gemini-2.0-flash";
 // Primary: Gemini 2.0 Flash with image generation (responseModalities IMAGE+TEXT)
-// Updated from deprecated gemini-2.0-flash-preview-image-generation
 const GEMINI_IMAGE_MODEL = "gemini-2.0-flash";
 // Fallback: Imagen 3 (text-to-image, available to AI Studio API keys with billing)
 const IMAGEN_MODEL = "imagen-3.0-generate-002";
@@ -78,8 +77,6 @@ function buildPosterPrompt(opts: PosterOptions): string {
 
 /**
  * Try Gemini 2.0 Flash image generation (image-to-image).
- * Uses responseModalities: ["IMAGE", "TEXT"] which is the correct API for
- * Gemini 2.0 Flash image generation (updated from deprecated preview model).
  * Returns base64 data URL or throws with { status } for fallback handling.
  */
 async function tryGeminiImageModel(key: string, opts: PosterOptions): Promise<string> {
@@ -124,9 +121,11 @@ async function tryGeminiImageModel(key: string, opts: PosterOptions): Promise<st
       .map((p) => p.text)
       .join(" ");
     // Check if the model returned a refusal or model-not-available message
-    if (textMsg?.toLowerCase().includes("tidak tersedia") ||
-        textMsg?.toLowerCase().includes("not available") ||
-        textMsg?.toLowerCase().includes("cannot generate")) {
+    if (
+      textMsg?.toLowerCase().includes("tidak tersedia") ||
+      textMsg?.toLowerCase().includes("not available") ||
+      textMsg?.toLowerCase().includes("cannot generate")
+    ) {
       const err = new Error(textMsg) as Error & { status: number };
       err.status = 403; // treat as access denied → fallback to Imagen 3
       throw err;
@@ -160,7 +159,14 @@ async function tryImagen3(key: string, opts: PosterOptions): Promise<string> {
     instances: [{ prompt }],
     parameters: {
       sampleCount: 1,
-      aspectRatio: opts.ratio === "4:5" ? "4:5" : opts.ratio === "9:16" ? "9:16" : opts.ratio === "16:9" ? "16:9" : "1:1",
+      aspectRatio:
+        opts.ratio === "4:5"
+          ? "4:5"
+          : opts.ratio === "9:16"
+            ? "9:16"
+            : opts.ratio === "16:9"
+              ? "16:9"
+              : "1:1",
       safetyFilterLevel: "block_some",
       personGeneration: "allow_adult",
     },
@@ -175,7 +181,10 @@ async function tryImagen3(key: string, opts: PosterOptions): Promise<string> {
   if (!res.ok) {
     const errText = await res.text();
     const status = res.status;
-    if (status === 400) throw new Error("Prompt tidak valid. Coba sederhanakan teks atau ubah prompt tambahan.");
+    if (status === 400)
+      throw new Error(
+        "Prompt tidak valid. Coba sederhanakan teks atau ubah prompt tambahan.",
+      );
     if (status === 403)
       throw new Error(
         "API Key tidak memiliki akses ke model image generation. Pastikan API Key Anda dari Google AI Studio (aistudio.google.com/apikey) dan format key sudah benar (biasanya diawali AIzaSy...). Jika sudah benar, aktifkan billing di Google Cloud Console untuk mengakses Imagen.",
@@ -196,8 +205,10 @@ async function tryImagen3(key: string, opts: PosterOptions): Promise<string> {
 /**
  * Generate advertising poster.
  * Strategy:
- *  1. Try Gemini 2.0 Flash image generation (image-to-image).
- *  2. If 404/403/model-not-available, fall back to Imagen 3 text-to-image.
+ * 1. Try Gemini 2.0 Flash image generation (image-to-image).
+ * 2. If 400/404/403/model-not-available, fall back to Imagen 3 text-to-image.
+ *    Note: 400 from Gemini image model can mean the API key type (e.g. AQ. prefix keys)
+ *    doesn't support responseModalities image generation — Imagen 3 may still work.
  * Returns the result image as a base64 data URL.
  */
 export async function generatePosterImage(opts: PosterOptions): Promise<string> {
@@ -213,18 +224,22 @@ export async function generatePosterImage(opts: PosterOptions): Promise<string> 
     return await tryGeminiImageModel(key, opts);
   } catch (e) {
     const status = (e as { status?: number }).status;
-    // 404 = model not found, 403 = access denied, 0 = model returned text (not image) → fall through to Imagen 3
-    if (status !== 404 && status !== 403 && status !== 0) {
-      const status2 = status ?? 0;
-      if (status2 === 400)
-        throw new Error(
-          "Format gambar tidak valid. Coba gunakan gambar JPG/PNG yang lebih sederhana.",
-        );
-      if (status2 === 429)
+    // Fallback conditions:
+    // 400 = request rejected (key type may not support image gen, e.g. AQ. format keys)
+    // 403 = access denied
+    // 404 = model not found
+    // 0   = model returned text instead of image
+    const shouldFallback = status === 400 || status === 403 || status === 404 || status === 0;
+    if (!shouldFallback) {
+      if (status === 429)
         throw new Error("Kuota API Key habis. Coba lagi beberapa saat kemudian.");
       throw e;
     }
-    console.warn("[gemini] Gemini image model not available (status:", status, "), falling back to Imagen 3");
+    console.warn(
+      "[gemini] Gemini image model not available (status:",
+      status,
+      "), falling back to Imagen 3",
+    );
   }
 
   // ── Attempt 2: Imagen 3 text-to-image ──
