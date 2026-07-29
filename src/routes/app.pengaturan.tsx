@@ -11,12 +11,11 @@ import {
   Percent,
   Trash2,
   AlertTriangle,
-  Image,
 } from "lucide-react";
 import { toast } from "sonner";
 import { currentUser, currentTenant, db } from "@/lib/store";
 import { supabase } from "@/integrations/supabase/client";
-import { getReplicateKey, setReplicateKey } from "@/lib/replicate";
+import { getHFKey, setHFKey } from "@/lib/huggingface";
 
 export const Route = createFileRoute("/app/pengaturan")({ component: Pengaturan });
 
@@ -26,9 +25,9 @@ function Pengaturan() {
   const [key, setKey] = useState(me?.geminiApiKey ?? "");
   const [show, setShow] = useState(false);
 
-  // Replicate key state (localStorage-based)
-  const [replicateKey, setReplicateKeyState] = useState(getReplicateKey() ?? "");
-  const [showReplicate, setShowReplicate] = useState(false);
+  // Hugging Face token state (localStorage-based)
+  const [hfKey, setHfKeyState] = useState(getHFKey() ?? "");
+  const [showHf, setShowHf] = useState(false);
 
   const [oldPassword, setOldPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -53,12 +52,12 @@ function Pengaturan() {
     toast.success(key ? "Kunci Gemini pribadi tersimpan." : "Kunci Gemini pribadi dihapus.");
   }
 
-  function saveReplicateKey() {
-    setReplicateKey(replicateKey);
+  function saveHFKey() {
+    setHFKey(hfKey);
     toast.success(
-      replicateKey.trim()
-        ? "Kunci Replicate tersimpan. Siap generate poster!"
-        : "Kunci Replicate dihapus.",
+      hfKey.trim()
+        ? "Token Hugging Face tersimpan. Siap generate poster!"
+        : "Token Hugging Face dihapus.",
     );
   }
 
@@ -73,26 +72,15 @@ function Pengaturan() {
     try {
       const { data: userData } = await supabase.auth.getUser();
       const userEmail = userData?.user?.email;
-      if (!userEmail) {
-        toast.error("Sesi tidak ditemukan. Silakan login kembali.");
-        return;
-      }
-      const { error: signInError } = await supabase.auth.signInWithPassword({
-        email: userEmail,
-        password: oldPassword,
-      });
-      if (signInError) {
-        toast.error("Password lama tidak sesuai.");
-        return;
-      }
+      if (!userEmail) { toast.error("Sesi tidak ditemukan. Silakan login kembali."); return; }
+      const { error: signInError } = await supabase.auth.signInWithPassword({ email: userEmail, password: oldPassword });
+      if (signInError) { toast.error("Password lama tidak sesuai."); return; }
       const { error: updateError } = await supabase.auth.updateUser({ password: newPassword });
       if (updateError) {
         toast.error(`Gagal mengubah password: ${updateError.message}`);
       } else {
         toast.success("Password berhasil diperbarui!");
-        setOldPassword("");
-        setNewPassword("");
-        setConfirmPassword("");
+        setOldPassword(""); setNewPassword(""); setConfirmPassword("");
       }
     } catch {
       toast.error("Terjadi kesalahan saat memperbarui password.");
@@ -106,80 +94,33 @@ function Pengaturan() {
     localStorage.setItem("bucici_tax_rate", val.toString());
     setTaxRate(val);
     toast.success(
-      val > 0
-        ? `Pajak default ${val}% tersimpan. Aktif otomatis di kasir baru.`
-        : "Pajak default dinonaktifkan. Kasir baru mulai tanpa pajak.",
+      val > 0 ? `Pajak default ${val}% tersimpan.` : "Pajak default dinonaktifkan.",
     );
   }
 
   async function handleHapusDataKeuangan() {
-    if (resetConfirmInput !== "HAPUS") {
-      toast.error("Ketik kata HAPUS dengan huruf kapital untuk mengonfirmasi.");
-      return;
-    }
-    if (!tenant) {
-      toast.error("Data toko tidak ditemukan.");
-      return;
-    }
-
+    if (resetConfirmInput !== "HAPUS") { toast.error("Ketik kata HAPUS dengan huruf kapital."); return; }
+    if (!tenant) { toast.error("Data toko tidak ditemukan."); return; }
     setLoadingReset(true);
     setResetError("");
-
     try {
-      // 1. Hapus transaction_items dulu (foreign key constraint)
-      const { data: txRows } = await supabase
-        .from("transactions")
-        .select("id")
-        .eq("tenant_id", tenant.id);
-
+      const { data: txRows } = await supabase.from("transactions").select("id").eq("tenant_id", tenant.id);
       const txIds = (txRows ?? []).map((r: { id: string }) => r.id);
       if (txIds.length > 0) {
-        const { error: errItems } = await supabase
-          .from("transaction_items")
-          .delete()
-          .in("transaction_id", txIds);
-        if (errItems) {
-          console.warn("[hapus] transaction_items error (ignored):", errItems.message);
-        }
+        const { error: errItems } = await supabase.from("transaction_items").delete().in("transaction_id", txIds);
+        if (errItems) console.warn("[hapus] transaction_items error (ignored):", errItems.message);
       }
-
-      // 2. Hapus transaksi
-      const { error: errTx } = await supabase
-        .from("transactions")
-        .delete()
-        .eq("tenant_id", tenant.id);
-      if (errTx) {
-        console.warn("[hapus] transactions error:", errTx.message);
-        setResetError((prev) => prev + `Transaksi: ${errTx.message}. `);
-      }
-
-      // 3. Hapus catatan kas
-      const { error: errCash } = await supabase
-        .from("cash")
-        .delete()
-        .eq("tenant_id", tenant.id);
-      if (errCash) {
-        console.warn("[hapus] cash error:", errCash.message);
-        setResetError((prev) => prev + `Kas: ${errCash.message}. `);
-      }
-
-      // 4. Hapus gerakan stok
-      const { error: errStock } = await supabase
-        .from("stock_movements")
-        .delete()
-        .eq("tenant_id", tenant.id);
-      if (errStock) {
-        console.warn("[hapus] stock_movements error:", errStock.message);
-      }
-
-      // 5. Selalu bersihkan local state
+      const { error: errTx } = await supabase.from("transactions").delete().eq("tenant_id", tenant.id);
+      if (errTx) { console.warn("[hapus] transactions error:", errTx.message); setResetError((p) => p + `Transaksi: ${errTx.message}. `); }
+      const { error: errCash } = await supabase.from("cash").delete().eq("tenant_id", tenant.id);
+      if (errCash) { console.warn("[hapus] cash error:", errCash.message); setResetError((p) => p + `Kas: ${errCash.message}. `); }
+      const { error: errStock } = await supabase.from("stock_movements").delete().eq("tenant_id", tenant.id);
+      if (errStock) console.warn("[hapus] stock_movements error:", errStock.message);
       db.set((s) => {
         s.transactions = s.transactions.filter((t) => t.tenantId !== tenant.id);
         s.cash = s.cash.filter((c) => c.tenantId !== tenant.id);
         s.stock = s.stock.filter((stk) => stk.tenantId !== tenant.id);
       });
-
-      // 6. Bersihkan localStorage
       if (typeof window !== "undefined") {
         localStorage.removeItem(`bucici_db_v2_${tenant.id}`);
         localStorage.removeItem("bucici_pending_cash");
@@ -188,19 +129,12 @@ function Pengaturan() {
         localStorage.removeItem("bucici_pending_prod");
         localStorage.removeItem("bucici_pending_cat");
       }
-
       toast.success("Data keuangan berhasil dihapus!");
       setShowResetModal(false);
       setResetConfirmInput("");
     } catch (error) {
-      const msg =
-        error instanceof Error
-          ? error.message
-          : typeof error === "object" && error !== null && "message" in error
-            ? String((error as { message: unknown }).message)
-            : "Terjadi kesalahan tidak diketahui.";
+      const msg = error instanceof Error ? error.message : "Terjadi kesalahan tidak diketahui.";
       toast.error(`Gagal: ${msg}`);
-      console.error("[hapus] unexpected error:", error);
     } finally {
       setLoadingReset(false);
     }
@@ -214,9 +148,7 @@ function Pengaturan() {
         <h1 className="text-lg sm:text-xl font-bold flex items-center gap-2">
           <Shield className="text-primary" /> Pengaturan Akun
         </h1>
-        <p className="text-xs sm:text-sm text-muted-foreground">
-          Kelola preferensi, keamanan akun, dan konfigurasi toko Anda.
-        </p>
+        <p className="text-xs sm:text-sm text-muted-foreground">Kelola preferensi, keamanan akun, dan konfigurasi toko Anda.</p>
       </div>
 
       {/* Ganti Password */}
@@ -228,43 +160,18 @@ function Pengaturan() {
         <form onSubmit={handleUpdatePassword} className="space-y-3">
           <div>
             <label className="text-xs font-semibold text-muted-foreground">Password Lama</label>
-            <input
-              type="password"
-              value={oldPassword}
-              onChange={(e) => setOldPassword(e.target.value)}
-              placeholder="Masukkan password saat ini"
-              className="w-full rounded-lg neu-inset px-3 py-2 text-sm mt-1"
-            />
+            <input type="password" value={oldPassword} onChange={(e) => setOldPassword(e.target.value)} placeholder="Masukkan password saat ini" className="w-full rounded-lg neu-inset px-3 py-2 text-sm mt-1" />
           </div>
           <div>
             <label className="text-xs font-semibold text-muted-foreground">Password Baru</label>
-            <input
-              type="password"
-              value={newPassword}
-              onChange={(e) => setNewPassword(e.target.value)}
-              placeholder="Minimal 6 karakter"
-              className="w-full rounded-lg neu-inset px-3 py-2 text-sm mt-1"
-            />
+            <input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="Minimal 6 karakter" className="w-full rounded-lg neu-inset px-3 py-2 text-sm mt-1" />
           </div>
           <div>
-            <label className="text-xs font-semibold text-muted-foreground">
-              Konfirmasi Password Baru
-            </label>
-            <input
-              type="password"
-              value={confirmPassword}
-              onChange={(e) => setConfirmPassword(e.target.value)}
-              placeholder="Ulangi password baru"
-              className="w-full rounded-lg neu-inset px-3 py-2 text-sm mt-1"
-            />
+            <label className="text-xs font-semibold text-muted-foreground">Konfirmasi Password Baru</label>
+            <input type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} placeholder="Ulangi password baru" className="w-full rounded-lg neu-inset px-3 py-2 text-sm mt-1" />
           </div>
-          <button
-            type="submit"
-            disabled={loadingPassword}
-            className="rounded-xl bg-gradient-primary px-4 py-2 text-sm font-semibold text-primary-foreground flex items-center gap-2 disabled:opacity-50"
-          >
-            <Save size={14} />{" "}
-            {loadingPassword ? "Memverifikasi & Menyimpan..." : "Perbarui Password"}
+          <button type="submit" disabled={loadingPassword} className="rounded-xl bg-gradient-primary px-4 py-2 text-sm font-semibold text-primary-foreground flex items-center gap-2 disabled:opacity-50">
+            <Save size={14} /> {loadingPassword ? "Memverifikasi & Menyimpan..." : "Perbarui Password"}
           </button>
         </form>
       </div>
@@ -276,31 +183,15 @@ function Pengaturan() {
             <Percent size={18} className="text-primary" />
             <h2 className="font-bold">Pajak Default Kasir / POS</h2>
           </div>
-          <p className="text-xs text-muted-foreground">
-            Persentase pajak (%) ini akan otomatis diterapkan pada setiap transaksi kasir baru. Isi{" "}
-            <b>0</b> untuk menonaktifkan.
-          </p>
+          <p className="text-xs text-muted-foreground">Persentase pajak (%) ini akan otomatis diterapkan pada setiap transaksi kasir baru. Isi <b>0</b> untuk menonaktifkan.</p>
           <div className="flex items-center gap-2 max-w-xs">
-            <input
-              type="number"
-              min={0}
-              max={100}
-              value={taxRate === 0 ? "" : taxRate}
-              onChange={(e) => setTaxRate(Number(e.target.value))}
-              placeholder="0"
-              className="w-full rounded-lg neu-inset px-3 py-2 text-sm"
-            />
+            <input type="number" min={0} max={100} value={taxRate === 0 ? "" : taxRate} onChange={(e) => setTaxRate(Number(e.target.value))} placeholder="0" className="w-full rounded-lg neu-inset px-3 py-2 text-sm" />
             <span className="text-sm font-bold">%</span>
           </div>
           {taxRate > 0 && (
-            <div className="rounded-lg bg-success/10 border border-success/20 p-2 text-xs text-success">
-              ✓ Kasir baru akan otomatis mengaktifkan pajak {taxRate}%.
-            </div>
+            <div className="rounded-lg bg-success/10 border border-success/20 p-2 text-xs text-success">✓ Kasir baru akan otomatis mengaktifkan pajak {taxRate}%.</div>
           )}
-          <button
-            onClick={saveTaxRate}
-            className="rounded-xl bg-gradient-primary px-4 py-2 text-sm font-semibold text-primary-foreground flex items-center gap-2"
-          >
+          <button onClick={saveTaxRate} className="rounded-xl bg-gradient-primary px-4 py-2 text-sm font-semibold text-primary-foreground flex items-center gap-2">
             <Save size={14} /> Simpan Pajak
           </button>
         </div>
@@ -313,101 +204,65 @@ function Pengaturan() {
           <h2 className="font-bold">Kunci AI Pribadi (BYOK) — Gemini</h2>
         </div>
         <p className="text-xs text-muted-foreground">
-          Untuk fitur AI teks (analisis, saran, dll). Format{" "}
-          <code className="font-mono">AQ...</code> atau <code className="font-mono">AIza...</code>.
-          Dapatkan gratis di{" "}
-          <a
-            href="https://aistudio.google.com/apikey"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1 text-primary-glow underline"
-          >
+          Untuk fitur AI teks (analisis, saran, dll). Format <code className="font-mono">AQ...</code> atau <code className="font-mono">AIza...</code>. Dapatkan gratis di{" "}
+          <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-primary-glow underline">
             aistudio.google.com/apikey <ExternalLink size={12} />
-          </a>
-          .
+          </a>.
         </p>
         <div className="relative">
-          <input
-            value={key}
-            onChange={(e) => setKey(e.target.value)}
-            type={show ? "text" : "password"}
-            placeholder="AQ.Ab8RN6... atau AIza..."
-            className="w-full rounded-lg neu-inset px-3 py-2 pr-10 text-sm font-mono"
-          />
-          <button
-            type="button"
-            onClick={() => setShow((v) => !v)}
-            className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground p-1"
-          >
+          <input value={key} onChange={(e) => setKey(e.target.value)} type={show ? "text" : "password"} placeholder="AQ.Ab8RN6... atau AIza..." className="w-full rounded-lg neu-inset px-3 py-2 pr-10 text-sm font-mono" />
+          <button type="button" onClick={() => setShow((v) => !v)} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground p-1">
             {show ? <EyeOff size={16} /> : <Eye size={16} />}
           </button>
         </div>
-        <button
-          onClick={saveGeminiKey}
-          className="rounded-xl bg-gradient-primary px-4 py-2 text-sm font-semibold text-primary-foreground flex items-center gap-2"
-        >
+        <button onClick={saveGeminiKey} className="rounded-xl bg-gradient-primary px-4 py-2 text-sm font-semibold text-primary-foreground flex items-center gap-2">
           <Save size={14} /> Simpan Kunci Gemini
         </button>
         {me?.geminiApiKey && (
-          <div className="rounded-lg bg-success/10 border border-success/20 p-3 text-xs text-success">
-            ✓ Kunci Gemini aktif. Digunakan untuk fitur AI teks.
-          </div>
+          <div className="rounded-lg bg-success/10 border border-success/20 p-3 text-xs text-success">✓ Kunci Gemini aktif. Digunakan untuk fitur AI teks.</div>
         )}
       </div>
 
-      {/* Kunci AI Pribadi - Replicate (untuk Generate Poster) */}
+      {/* Kunci AI Pribadi - Hugging Face (untuk Generate Poster) */}
       <div className="neu p-5 space-y-3">
         <div className="flex items-center gap-2">
-          <Image size={18} className="text-primary" />
-          <h2 className="font-bold">Kunci AI Pribadi (BYOK) — Replicate</h2>
+          <KeyRound size={18} className="text-primary" />
+          <h2 className="font-bold">Kunci AI Pribadi (BYOK) — Hugging Face</h2>
+          <span className="ml-auto text-[10px] font-bold bg-green-500/20 text-green-400 border border-green-500/30 px-2 py-0.5 rounded-full">GRATIS</span>
         </div>
         <p className="text-xs text-muted-foreground">
-          Untuk fitur <b>Generate Poster Iklan</b> (image-to-image). Daftar & dapatkan API key gratis di{" "}
-          <a
-            href="https://replicate.com/account/api-tokens"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1 text-primary-glow underline"
-          >
-            replicate.com/account/api-tokens <ExternalLink size={12} />
-          </a>
-          . Format: <code className="font-mono">r8_...</code>
+          Untuk fitur <b>Generate Poster Iklan</b>. Daftar gratis di{" "}
+          <a href="https://huggingface.co" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-primary-glow underline">
+            huggingface.co <ExternalLink size={12} />
+          </a>{" "}
+          — tidak perlu kartu kredit. Format token: <code className="font-mono">hf_...</code>
         </p>
         <div className="rounded-lg bg-muted/40 border border-border p-3 text-xs text-muted-foreground space-y-1">
-          <p className="font-semibold text-foreground">Cara mendapatkan kunci Replicate:</p>
+          <p className="font-semibold text-foreground">Cara mendapatkan token Hugging Face (gratis):</p>
           <ol className="list-decimal list-inside space-y-0.5">
-            <li>Buka <a href="https://replicate.com" target="_blank" rel="noopener noreferrer" className="underline">replicate.com</a> → Sign Up (gratis)</li>
-            <li>Buka <a href="https://replicate.com/account/billing" target="_blank" rel="noopener noreferrer" className="underline">Account → Billing</a> → tambah kredit (mulai $5)</li>
-            <li>Buka <a href="https://replicate.com/account/api-tokens" target="_blank" rel="noopener noreferrer" className="underline">Account → API Tokens</a> → Create token</li>
-            <li>Salin token (format <code className="font-mono">r8_...</code>) dan tempel di bawah</li>
+            <li>Buka <a href="https://huggingface.co" target="_blank" rel="noopener noreferrer" className="underline">huggingface.co</a> → Sign Up (gratis, tanpa kartu kredit)</li>
+            <li>Klik foto profil → <a href="https://huggingface.co/settings/tokens" target="_blank" rel="noopener noreferrer" className="underline">Settings → Access Tokens</a></li>
+            <li>Klik <b>New token</b> → pilih tipe <b>Read</b> → Create</li>
+            <li>Salin token (format <code className="font-mono">hf_...</code>) dan tempel di bawah</li>
           </ol>
         </div>
         <div className="relative">
           <input
-            value={replicateKey}
-            onChange={(e) => setReplicateKeyState(e.target.value)}
-            type={showReplicate ? "text" : "password"}
-            placeholder="r8_xxxxxxxxxxxxxxxxxxxx"
+            value={hfKey}
+            onChange={(e) => setHfKeyState(e.target.value)}
+            type={showHf ? "text" : "password"}
+            placeholder="hf_xxxxxxxxxxxxxxxxxxxxxxxx"
             className="w-full rounded-lg neu-inset px-3 py-2 pr-10 text-sm font-mono"
           />
-          <button
-            type="button"
-            onClick={() => setShowReplicate((v) => !v)}
-            className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground p-1"
-          >
-            {showReplicate ? <EyeOff size={16} /> : <Eye size={16} />}
+          <button type="button" onClick={() => setShowHf((v) => !v)} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground p-1">
+            {showHf ? <EyeOff size={16} /> : <Eye size={16} />}
           </button>
         </div>
-        <button
-          onClick={saveReplicateKey}
-          className="rounded-xl bg-gradient-primary px-4 py-2 text-sm font-semibold text-primary-foreground flex items-center gap-2"
-        >
-          <Save size={14} /> Simpan Kunci Replicate
+        <button onClick={saveHFKey} className="rounded-xl bg-gradient-primary px-4 py-2 text-sm font-semibold text-primary-foreground flex items-center gap-2">
+          <Save size={14} /> Simpan Token HF
         </button>
-        {getReplicateKey() && (
-          <div className="rounded-lg bg-success/10 border border-success/20 p-3 text-xs text-success">
-            ✓ Kunci Replicate aktif. Generate poster iklan siap digunakan.
-          </div>
+        {getHFKey() && (
+          <div className="rounded-lg bg-success/10 border border-success/20 p-3 text-xs text-success">✓ Token Hugging Face aktif. Generate poster iklan siap digunakan.</div>
         )}
       </div>
 
@@ -419,20 +274,14 @@ function Pengaturan() {
             <h2 className="font-bold">Hapus Data Keuangan</h2>
           </div>
           <p className="text-xs text-muted-foreground">
-            Menghapus seluruh data keuangan toko <b>{tenant?.businessName}</b> secara permanen.
-            Data yang dihapus: <b>semua transaksi, catatan kas, dan riwayat stok</b>.
-            Data yang tidak terhapus: produk, kategori, anggota, dan role tetap aman.
+            Menghapus seluruh data keuangan toko <b>{tenant?.businessName}</b> secara permanen. Data yang dihapus: <b>semua transaksi, catatan kas, dan riwayat stok</b>. Data yang tidak terhapus: produk, kategori, anggota, dan role tetap aman.
           </p>
-          <button
-            onClick={() => setShowResetModal(true)}
-            className="rounded-xl bg-destructive px-4 py-2 text-sm font-semibold text-destructive-foreground flex items-center gap-2 hover:bg-destructive/90 transition-colors"
-          >
+          <button onClick={() => setShowResetModal(true)} className="rounded-xl bg-destructive px-4 py-2 text-sm font-semibold text-destructive-foreground flex items-center gap-2 hover:bg-destructive/90 transition-colors">
             <Trash2 size={14} /> Hapus Semua Data Keuangan
           </button>
         </div>
       )}
 
-      {/* Modal Konfirmasi Hapus Data Keuangan */}
       {showResetModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
           <div className="neu p-6 max-w-md w-full space-y-4 bg-background border border-destructive/40 rounded-2xl shadow-2xl">
@@ -440,7 +289,6 @@ function Pengaturan() {
               <AlertTriangle size={24} />
               <h3 className="font-bold text-lg">Konfirmasi Hapus Data Keuangan</h3>
             </div>
-
             <div className="rounded-lg bg-destructive/8 border border-destructive/20 p-3 space-y-1 text-xs">
               <p className="font-semibold text-destructive">Data yang akan DIHAPUS permanen:</p>
               <ul className="list-disc list-inside text-muted-foreground space-y-0.5">
@@ -455,39 +303,14 @@ function Pengaturan() {
                 <li>Data toko &amp; lisensi</li>
               </ul>
             </div>
-
-            <p className="text-xs font-semibold">
-              Ketik{" "}
-              <span className="text-destructive font-mono font-bold">HAPUS</span> untuk melanjutkan:
-            </p>
-            <input
-              type="text"
-              value={resetConfirmInput}
-              onChange={(e) => setResetConfirmInput(e.target.value)}
-              placeholder="Ketik HAPUS"
-              className="w-full rounded-lg neu-inset px-3 py-2 text-sm font-bold uppercase tracking-wider text-center"
-            />
+            <p className="text-xs font-semibold">Ketik <span className="text-destructive font-mono font-bold">HAPUS</span> untuk melanjutkan:</p>
+            <input type="text" value={resetConfirmInput} onChange={(e) => setResetConfirmInput(e.target.value)} placeholder="Ketik HAPUS" className="w-full rounded-lg neu-inset px-3 py-2 text-sm font-bold uppercase tracking-wider text-center" />
             {resetError && (
-              <div className="rounded-lg bg-warning/10 border border-warning/20 p-2 text-xs text-warning">
-                ⚠️ {resetError} Data lokal tetap dibersihkan.
-              </div>
+              <div className="rounded-lg bg-warning/10 border border-warning/20 p-2 text-xs text-warning">⚠️ {resetError} Data lokal tetap dibersihkan.</div>
             )}
             <div className="flex gap-2 justify-end pt-2">
-              <button
-                onClick={() => {
-                  setShowResetModal(false);
-                  setResetConfirmInput("");
-                  setResetError("");
-                }}
-                className="px-4 py-2 rounded-xl neu text-xs font-semibold"
-              >
-                Batal
-              </button>
-              <button
-                onClick={handleHapusDataKeuangan}
-                disabled={resetConfirmInput !== "HAPUS" || loadingReset}
-                className="px-4 py-2 rounded-xl bg-destructive text-destructive-foreground text-xs font-bold disabled:opacity-40"
-              >
+              <button onClick={() => { setShowResetModal(false); setResetConfirmInput(""); setResetError(""); }} className="px-4 py-2 rounded-xl neu text-xs font-semibold">Batal</button>
+              <button onClick={handleHapusDataKeuangan} disabled={resetConfirmInput !== "HAPUS" || loadingReset} className="px-4 py-2 rounded-xl bg-destructive text-destructive-foreground text-xs font-bold disabled:opacity-40">
                 {loadingReset ? "Menghapus..." : "Ya, Hapus Data Keuangan"}
               </button>
             </div>

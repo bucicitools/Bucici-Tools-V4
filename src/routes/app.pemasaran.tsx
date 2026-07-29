@@ -2,7 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
 import { Upload, Download, Loader2, Sparkles, ImageIcon, AlertCircle } from "lucide-react";
 import { toast } from "sonner";
-import { getReplicateKey, generatePosterImage } from "@/lib/replicate";
+import { getHFKey, generatePosterImage } from "@/lib/huggingface";
 
 export const Route = createFileRoute("/app/pemasaran")({ component: Pemasaran });
 
@@ -17,76 +17,20 @@ const PRODUCT_TYPES = [
 ];
 
 const STYLES = [
-  {
-    k: "fresh",
-    label: "Fresh Style",
-    desc: "fresh clean minimal aesthetic, soft daylight, bright whites and mint accents",
-  },
-  {
-    k: "bold",
-    label: "Bold Style",
-    desc: "bold high-contrast commercial style, saturated primary colors, thick sans-serif typography",
-  },
-  {
-    k: "hot",
-    label: "Hot Style",
-    desc: "hot red and orange gradient, flame accents, appetizing steam, high energy",
-  },
-  {
-    k: "traditional",
-    label: "Traditional Style",
-    desc: "traditional Indonesian heritage, batik ornament, warm brown and gold, rustic wood",
-  },
-  {
-    k: "playful",
-    label: "Playful Style",
-    desc: "playful pop style, pastel confetti, bubbles, cheerful mood",
-  },
-  {
-    k: "natural",
-    label: "Natural Photography",
-    desc: "natural photography style, editorial magazine look, soft studio lighting, shallow depth of field",
-  },
-  {
-    k: "youth",
-    label: "Youth Fun Poster",
-    desc: "youth-oriented gen-z poster, bold color blocks, sticker collage, halftone dots",
-  },
-  {
-    k: "street",
-    label: "Street Fun Poster",
-    desc: "urban street style, graffiti spray, neon signage, city night vibe",
-  },
-  {
-    k: "rustic",
-    label: "Rustic Style",
-    desc: "rustic artisan style, kraft paper background, hand-lettered typography, warm earth tones",
-  },
-  {
-    k: "emoji",
-    label: "Emoji Style",
-    desc: "cheerful emoji-based composition, chat-bubble callouts, bright yellow accents",
-  },
-  {
-    k: "splash",
-    label: "Splash Style",
-    desc: "dynamic splash of liquid or paint, motion-frozen droplets, dramatic lighting",
-  },
-  {
-    k: "ramadhan",
-    label: "Ramadhan Style",
-    desc: "ramadhan festive theme, lantern, crescent moon, deep green and gold, arabesque ornaments",
-  },
-  {
-    k: "lebaran",
-    label: "Lebaran Style",
-    desc: "lebaran festive theme, ketupat, mosque silhouette, warm gold and emerald, celebration mood",
-  },
-  {
-    k: "holiday",
-    label: "Holiday Style",
-    desc: "holiday celebration theme, festive garland, glowing lights, gift accents",
-  },
+  { k: "fresh", label: "Fresh Style", desc: "fresh clean minimal aesthetic, soft daylight, bright whites and mint accents" },
+  { k: "bold", label: "Bold Style", desc: "bold high-contrast commercial style, saturated primary colors, thick sans-serif typography" },
+  { k: "hot", label: "Hot Style", desc: "hot red and orange gradient, flame accents, appetizing steam, high energy" },
+  { k: "traditional", label: "Traditional Style", desc: "traditional Indonesian heritage, batik ornament, warm brown and gold, rustic wood" },
+  { k: "playful", label: "Playful Style", desc: "playful pop style, pastel confetti, bubbles, cheerful mood" },
+  { k: "natural", label: "Natural Photography", desc: "natural photography style, editorial magazine look, soft studio lighting, shallow depth of field" },
+  { k: "youth", label: "Youth Fun Poster", desc: "youth-oriented gen-z poster, bold color blocks, sticker collage, halftone dots" },
+  { k: "street", label: "Street Fun Poster", desc: "urban street style, graffiti spray, neon signage, city night vibe" },
+  { k: "rustic", label: "Rustic Style", desc: "rustic artisan style, kraft paper background, hand-lettered typography, warm earth tones" },
+  { k: "emoji", label: "Emoji Style", desc: "cheerful emoji-based composition, chat-bubble callouts, bright yellow accents" },
+  { k: "splash", label: "Splash Style", desc: "dynamic splash of liquid or paint, motion-frozen droplets, dramatic lighting" },
+  { k: "ramadhan", label: "Ramadhan Style", desc: "ramadhan festive theme, lantern, crescent moon, deep green and gold, arabesque ornaments" },
+  { k: "lebaran", label: "Lebaran Style", desc: "lebaran festive theme, ketupat, mosque silhouette, warm gold and emerald, celebration mood" },
+  { k: "holiday", label: "Holiday Style", desc: "holiday celebration theme, festive garland, glowing lights, gift accents" },
 ];
 
 const RATIOS = [
@@ -119,7 +63,7 @@ function Pemasaran() {
   const [stepIdx, setStepIdx] = useState(0);
   const [result, setResult] = useState<string | null>(null);
 
-  const hasKey = !!getReplicateKey();
+  const hasKey = !!getHFKey();
   const styleDef = STYLES.find((s) => s.k === styleKey)!;
   const productLabel = PRODUCT_TYPES.find((p) => p.k === productType)!.label;
 
@@ -127,7 +71,6 @@ function Pemasaran() {
     const f = e.target.files?.[0];
     if (!f) return;
     setImgName(f.name);
-    // Resize image to max 1024px before encoding to avoid payload too large
     const reader = new FileReader();
     reader.onload = () => {
       const orig = reader.result as string;
@@ -136,13 +79,8 @@ function Pemasaran() {
         const MAX = 1024;
         let { width, height } = image;
         if (width > MAX || height > MAX) {
-          if (width > height) {
-            height = Math.round((height * MAX) / width);
-            width = MAX;
-          } else {
-            width = Math.round((width * MAX) / height);
-            height = MAX;
-          }
+          if (width > height) { height = Math.round((height * MAX) / width); width = MAX; }
+          else { width = Math.round((width * MAX) / height); height = MAX; }
         }
         const canvas = document.createElement("canvas");
         canvas.width = width;
@@ -156,37 +94,18 @@ function Pemasaran() {
   }
 
   async function generate() {
-    if (!img) {
-      toast.error("Upload foto produk terlebih dahulu.");
-      return;
-    }
-    if (!hasKey) {
-      toast.error("Masukkan Replicate API Key di Pengaturan → Kunci AI Pribadi.");
-      return;
-    }
+    if (!img) { toast.error("Upload foto produk terlebih dahulu."); return; }
+    if (!hasKey) { toast.error("Masukkan HF Token di Pengaturan → Kunci AI Pribadi."); return; }
     setLoading(true);
     setResult(null);
     setStepIdx(0);
-
-    // Cycle through loading steps every 3s
     let idx = 0;
-    const iv = setInterval(() => {
-      idx = Math.min(idx + 1, LOADING_STEPS.length - 1);
-      setStepIdx(idx);
-    }, 3000);
-
+    const iv = setInterval(() => { idx = Math.min(idx + 1, LOADING_STEPS.length - 1); setStepIdx(idx); }, 3000);
     try {
       const dataUrl = await generatePosterImage({
-        imageDataUrl: img,
-        title,
-        tagline,
-        cta,
-        contact: extra,
-        styleLabel: styleDef.label,
-        styleDescription: styleDef.desc,
-        productLabel,
-        ratio,
-        customPrompt,
+        imageDataUrl: img, title, tagline, cta, contact: extra,
+        styleLabel: styleDef.label, styleDescription: styleDef.desc,
+        productLabel, ratio, customPrompt,
       });
       setResult(dataUrl);
       toast.success("Poster berhasil dibuat!");
@@ -214,28 +133,23 @@ function Pemasaran() {
           <Sparkles className="text-purple-400" /> Studio Poster AI
         </h1>
         <p className="text-xs sm:text-sm text-slate-400">
-          Generate poster iklan dari foto produk · Powered by Replicate AI (FLUX Kontext Pro)
+          Generate poster iklan dari foto produk · Powered by Hugging Face AI (FLUX.1-Kontext)
         </p>
       </div>
 
-      {/* Warning if no API key */}
       {!hasKey && (
         <div className="mb-4 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 flex gap-2 text-sm text-amber-300">
           <AlertCircle size={18} className="shrink-0 mt-0.5" />
           <span>
-            Belum ada Replicate API Key.{" "}
-            <a href="/app/pengaturan" className="underline font-semibold">
-              Buka Pengaturan → Kunci AI Pribadi
-            </a>{" "}
-            untuk mengaktifkan generate poster.
+            Belum ada HF Token.{" "}
+            <a href="/app/pengaturan" className="underline font-semibold">Buka Pengaturan → Kunci AI Pribadi</a>{" "}
+            untuk mengaktifkan generate poster. Token gratis dari huggingface.co
           </span>
         </div>
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-[360px_1fr] gap-4">
-        {/* Left: Controls */}
         <div className="space-y-3">
-          {/* Upload foto */}
           <div className="rounded-2xl bg-white/5 border border-white/10 p-4 space-y-2">
             <p className="text-xs font-semibold text-slate-300 uppercase tracking-wide">Foto Produk</p>
             <label className="block cursor-pointer">
@@ -245,59 +159,36 @@ function Pemasaran() {
               </div>
               <input type="file" accept="image/*" onChange={upload} className="hidden" />
             </label>
-            {img && (
-              <img src={img} alt="Preview" className="rounded-lg h-28 w-full object-cover border border-white/10" />
-            )}
+            {img && <img src={img} alt="Preview" className="rounded-lg h-28 w-full object-cover border border-white/10" />}
           </div>
 
-          {/* Jenis & Style */}
           <div className="rounded-2xl bg-white/5 border border-white/10 p-4 space-y-3">
             <p className="text-xs font-semibold text-slate-300 uppercase tracking-wide">Kategori & Gaya</p>
             <F l="Jenis Bisnis">
               <select value={productType} onChange={(e) => setProductType(e.target.value)} className="inp">
-                {PRODUCT_TYPES.map((p) => (
-                  <option key={p.k} value={p.k} className="text-black">{p.label}</option>
-                ))}
+                {PRODUCT_TYPES.map((p) => <option key={p.k} value={p.k} className="text-black">{p.label}</option>)}
               </select>
             </F>
             <F l="Style Desain">
               <select value={styleKey} onChange={(e) => setStyleKey(e.target.value)} className="inp">
-                {STYLES.map((s) => (
-                  <option key={s.k} value={s.k} className="text-black">{s.label}</option>
-                ))}
+                {STYLES.map((s) => <option key={s.k} value={s.k} className="text-black">{s.label}</option>)}
               </select>
             </F>
             <F l="Rasio">
               <select value={ratio} onChange={(e) => setRatio(e.target.value)} className="inp">
-                {RATIOS.map((r) => (
-                  <option key={r.k} value={r.k} className="text-black">{r.label}</option>
-                ))}
+                {RATIOS.map((r) => <option key={r.k} value={r.k} className="text-black">{r.label}</option>)}
               </select>
             </F>
           </div>
 
-          {/* Teks poster */}
           <div className="rounded-2xl bg-white/5 border border-white/10 p-4 space-y-3">
             <p className="text-xs font-semibold text-slate-300 uppercase tracking-wide">Teks Poster</p>
-            <F l="Judul / Nama Produk">
-              <input value={title} onChange={(e) => setTitle(e.target.value)} className="inp" placeholder="Misal: Nasi Goreng Spesial" />
-            </F>
-            <F l="Tagline">
-              <input value={tagline} onChange={(e) => setTagline(e.target.value)} className="inp" placeholder="Kalimat pemikat singkat" />
-            </F>
-            <F l="Call to Action">
-              <input value={cta} onChange={(e) => setCta(e.target.value)} className="inp" />
-            </F>
-            <F l="Kontak / Info Tambahan">
-              <input value={extra} onChange={(e) => setExtra(e.target.value)} className="inp" placeholder="No. WA, alamat, promo, dll" />
-            </F>
+            <F l="Judul / Nama Produk"><input value={title} onChange={(e) => setTitle(e.target.value)} className="inp" placeholder="Misal: Nasi Goreng Spesial" /></F>
+            <F l="Tagline"><input value={tagline} onChange={(e) => setTagline(e.target.value)} className="inp" placeholder="Kalimat pemikat singkat" /></F>
+            <F l="Call to Action"><input value={cta} onChange={(e) => setCta(e.target.value)} className="inp" /></F>
+            <F l="Kontak / Info Tambahan"><input value={extra} onChange={(e) => setExtra(e.target.value)} className="inp" placeholder="No. WA, alamat, promo, dll" /></F>
             <F l="Detail Prompt Tambahan (opsional)">
-              <textarea
-                value={customPrompt}
-                onChange={(e) => setCustomPrompt(e.target.value)}
-                className="inp min-h-[60px] resize-none"
-                placeholder="Contoh: tambahkan bendera merah putih di sudut kanan"
-              />
+              <textarea value={customPrompt} onChange={(e) => setCustomPrompt(e.target.value)} className="inp min-h-[60px] resize-none" placeholder="Contoh: tambahkan bendera merah putih di sudut kanan" />
             </F>
           </div>
 
@@ -311,7 +202,6 @@ function Pemasaran() {
           </button>
         </div>
 
-        {/* Right: Result */}
         <div className="rounded-2xl bg-white/5 border border-white/10 p-4 min-h-[420px] flex items-center justify-center">
           {loading ? (
             <div className="flex flex-col items-center gap-4 text-center px-4">
@@ -323,33 +213,18 @@ function Pemasaran() {
               <div className="text-xs text-slate-400">Mohon tunggu sekitar 20–60 detik</div>
               <div className="flex gap-1">
                 {LOADING_STEPS.map((_, i) => (
-                  <div
-                    key={i}
-                    className={`h-1 w-6 rounded-full transition-all ${
-                      i <= stepIdx ? "bg-purple-400" : "bg-white/10"
-                    }`}
-                  />
+                  <div key={i} className={`h-1 w-6 rounded-full transition-all ${i <= stepIdx ? "bg-purple-400" : "bg-white/10"}`} />
                 ))}
               </div>
             </div>
           ) : result ? (
             <div className="relative group w-full">
-              <img
-                src={result}
-                alt="Poster iklan"
-                className="w-full rounded-xl object-contain max-h-[75vh] border border-white/10"
-              />
+              <img src={result} alt="Poster iklan" className="w-full rounded-xl object-contain max-h-[75vh] border border-white/10" />
               <div className="absolute bottom-3 right-3 flex gap-2">
-                <button
-                  onClick={downloadResult}
-                  className="rounded-lg bg-black/70 backdrop-blur px-3 py-2 text-xs flex items-center gap-1 hover:bg-black/90 transition"
-                >
+                <button onClick={downloadResult} className="rounded-lg bg-black/70 backdrop-blur px-3 py-2 text-xs flex items-center gap-1 hover:bg-black/90 transition">
                   <Download size={14} /> Download PNG
                 </button>
-                <button
-                  onClick={generate}
-                  className="rounded-lg bg-purple-600/80 backdrop-blur px-3 py-2 text-xs flex items-center gap-1 hover:bg-purple-600 transition"
-                >
+                <button onClick={generate} className="rounded-lg bg-purple-600/80 backdrop-blur px-3 py-2 text-xs flex items-center gap-1 hover:bg-purple-600 transition">
                   <Sparkles size={14} /> Generate Ulang
                 </button>
               </div>
@@ -358,9 +233,7 @@ function Pemasaran() {
             <div className="text-center text-slate-500 space-y-3">
               <ImageIcon className="mx-auto text-slate-600" size={48} />
               <p className="text-sm">Hasil poster akan tampil di sini</p>
-              <p className="text-xs text-slate-600">
-                Upload foto produk, atur gaya & teks, lalu klik Generate
-              </p>
+              <p className="text-xs text-slate-600">Upload foto produk, atur gaya & teks, lalu klik Generate</p>
             </div>
           )}
         </div>
