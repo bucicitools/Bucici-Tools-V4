@@ -49,28 +49,63 @@ function getDominantColor(dataUrl: string): Promise<string> {
 }
 
 function buildPrompt(opts: PosterOptions, dominantColor: string): string {
-  // Nama produk spesifik dari input user sebagai subjek visual UTAMA
-  const productName = opts.title.trim() || opts.productLabel;
+  // PENTING: Model FLUX tidak bisa membaca/menulis teks dengan akurat.
+  // Fokus prompt pada deskripsi VISUAL produk berdasarkan warna & kategori,
+  // bukan nama literal produk — agar tidak ada halusinasi teks di gambar.
+  const productLabel = opts.productLabel; // kategori (mis. "Makanan & Minuman")
+  const hasTitle = opts.title.trim().length > 0;
 
-  return [
-    `A professional commercial advertising poster featuring "${productName}" as the main hero product.`,
-    `The product "${productName}" is realistically depicted and beautifully presented, exactly matching what "${productName}" actually looks like in real life.`,
+  // Deskripsi visual berdasarkan kategori produk
+  const categoryVisuals: Record<string, string> = {
+    fnb: "delicious food and beverage product beautifully plated and styled",
+    fashion: "stylish clothing and fashion item displayed elegantly",
+    otomotif: "automotive part or vehicle accessory displayed professionally",
+    elektronik: "sleek electronic gadget or device showcased on clean surface",
+    jasa: "professional service concept with clean modern iconography",
+    beauty: "beauty and skincare product elegantly arranged",
+    lainnya: "product item displayed attractively",
+  };
+
+  // Cari key kategori dari label
+  const catKeyMap: Record<string, string> = {
+    "Makanan & Minuman": "fnb",
+    "Fashion & Pakaian": "fashion",
+    "Otomotif & Sparepart": "otomotif",
+    "Elektronik & Gadget": "elektronik",
+    "Jasa & Layanan": "jasa",
+    "Kecantikan & Kesehatan": "beauty",
+    "Bisnis Lainnya": "lainnya",
+  };
+  const catKey = catKeyMap[productLabel] ?? "lainnya";
+  const productVisual = categoryVisuals[catKey] ?? categoryVisuals.lainnya;
+
+  const lines = [
+    // Subjek utama: deskripsi visual produk dari foto yang diupload
+    `A professional commercial advertising poster. The hero product is a ${productVisual}.`,
+    `The product appearance is derived from the uploaded reference photo — replicate its exact shape, color, texture, and form faithfully.`,
+    `Do NOT invent or hallucinate any product name text in the image.`,
+    // Gaya desain
     `Design style: ${opts.styleDescription}.`,
+    // Warna dominan
     `Color palette inspired by: ${dominantColor}.`,
-    opts.tagline  ? `Tagline text: "${opts.tagline}".`       : "",
-    opts.cta      ? `Call-to-action: "${opts.cta}".`         : "",
-    opts.contact  ? `Contact info at bottom: "${opts.contact}".` : "",
-    opts.customPrompt ? `Extra: ${opts.customPrompt}.`       : "",
-    "Photorealistic product, ultra high quality, sharp professional typography, premium commercial look, social media ready.",
-  ].filter(Boolean).join(" ");
+    // Teks overlay — hanya jika user mengisi
+    hasTitle ? `The poster headline text reads exactly: "${opts.title.trim()}". Render this text clearly and accurately.` : "",
+    opts.tagline ? `Tagline below headline: "${opts.tagline}".` : "",
+    opts.cta ? `Call-to-action button text: "${opts.cta}".` : "",
+    opts.contact ? `Small contact info at the bottom: "${opts.contact}".` : "",
+    opts.customPrompt ? `Additional instruction: ${opts.customPrompt}.` : "",
+    "Ultra high quality, sharp professional layout, premium commercial look, social media ready.",
+  ];
+
+  return lines.filter(Boolean).join(" ");
 }
 
 function getRatio(ratio: string): { w: number; h: number } {
   const map: Record<string, { w: number; h: number }> = {
-    "1:1":  { w: 1024, h: 1024 },
-    "4:5":  { w: 896,  h: 1120 },
-    "9:16": { w: 576,  h: 1024 },
-    "16:9": { w: 1024, h: 576  },
+    "1:1": { w: 1024, h: 1024 },
+    "4:5": { w: 896, h: 1120 },
+    "9:16": { w: 576, h: 1024 },
+    "16:9": { w: 1024, h: 576 },
   };
   return map[ratio] ?? { w: 1024, h: 1024 };
 }
@@ -97,7 +132,7 @@ export async function generatePosterImage(opts: PosterOptions): Promise<string> 
   const blob = await response.blob();
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload  = () => resolve(reader.result as string);
+    reader.onload = () => resolve(reader.result as string);
     reader.onerror = () => reject(new Error("Gagal membaca gambar."));
     reader.readAsDataURL(blob);
   });
