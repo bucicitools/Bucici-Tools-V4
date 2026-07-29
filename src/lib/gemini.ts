@@ -1,12 +1,14 @@
 // Google Gemini client with BYOK support.
 // Priority: user's own key (profile) → VITE_GEMINI_API_KEY (env)
+//
+// Supports two API key formats:
+//   - AIzaSy...  (Standard API Key) → sent as ?key= query parameter
+//   - AQ....     (Auth Key / OAuth token) → sent as Authorization: Bearer header
 import { currentUser } from "@/lib/store";
 
 const BASE = "https://generativelanguage.googleapis.com/v1beta/models";
 const TEXT_MODEL = "gemini-2.0-flash";
-// Primary: Gemini 2.0 Flash with image generation (responseModalities IMAGE+TEXT)
 const GEMINI_IMAGE_MODEL = "gemini-2.0-flash";
-// Fallback: Imagen 3 (text-to-image, available to AI Studio API keys with billing)
 const IMAGEN_MODEL = "imagen-3.0-generate-002";
 
 export function getGeminiKey(): string | undefined {
@@ -14,6 +16,28 @@ export function getGeminiKey(): string | undefined {
   if (me?.geminiApiKey) return me.geminiApiKey;
   const envKey = import.meta.env.VITE_GEMINI_API_KEY as string | undefined;
   return envKey || undefined;
+}
+
+/**
+ * Detect whether a key is the new Auth Key format (AQ. prefix).
+ * Auth Keys use Bearer token auth, not ?key= query param.
+ */
+function isAuthKey(key: string): boolean {
+  return key.startsWith("AQ.");
+}
+
+/**
+ * Build fetch URL and headers for a Gemini API call based on key format.
+ * - Standard key (AIzaSy...): appends ?key= to URL, no auth header
+ * - Auth key (AQ...): uses Authorization: Bearer header, no ?key= in URL
+ */
+function buildGeminiRequest(url: string, key: string): { url: string; headers: Record<string, string> } {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (isAuthKey(key)) {
+    return { url, headers: { ...headers, Authorization: `Bearer ${key}` } };
+  }
+  const sep = url.includes("?") ? "&" : "?";
+  return { url: `${url}${sep}key=${key}`, headers };
 }
 
 export async function askGemini(prompt: string, system?: string): Promise<string> {
@@ -25,9 +49,10 @@ export async function askGemini(prompt: string, system?: string): Promise<string
     contents: [{ role: "user", parts: [{ text: prompt }] }],
     ...(system ? { systemInstruction: { role: "system", parts: [{ text: system }] } } : {}),
   };
-  const res = await fetch(`${BASE}/${TEXT_MODEL}:generateContent?key=${key}`, {
+  const { url, headers } = buildGeminiRequest(`${BASE}/${TEXT_MODEL}:generateContent`, key);
+  const res = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify(body),
   });
   if (!res.ok) {
@@ -56,9 +81,6 @@ export interface PosterOptions {
   customPrompt?: string;
 }
 
-/**
- * Build a rich text prompt for the poster.
- */
 function buildPosterPrompt(opts: PosterOptions): string {
   return [
     `Create a professional advertising poster for a ${opts.productLabel} business.`,
@@ -77,7 +99,7 @@ function buildPosterPrompt(opts: PosterOptions): string {
 
 /**
  * Try Gemini 2.0 Flash image generation (image-to-image).
- * Returns base64 data URL or throws with { status } for fallback handling.
+ * Supports both AIzaSy (query param) and AQ. (Bearer header) key formats.
  */
 async function tryGeminiImageModel(key: string, opts: PosterOptions): Promise<string> {
   const match = opts.imageDataUrl.match(/^data:([^;]+);base64,(.+)$/);
@@ -97,9 +119,10 @@ async function tryGeminiImageModel(key: string, opts: PosterOptions): Promise<st
     generationConfig: { responseModalities: ["IMAGE", "TEXT"] },
   };
 
-  const res = await fetch(`${BASE}/${GEMINI_IMAGE_MODEL}:generateContent?key=${key}`, {
+  const { url, headers } = buildGeminiRequest(`${BASE}/${GEMINI_IMAGE_MODEL}:generateContent`, key);
+  const res = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify(body),
   });
 
@@ -120,14 +143,13 @@ async function tryGeminiImageModel(key: string, opts: PosterOptions): Promise<st
       .filter((p) => p.text)
       .map((p) => p.text)
       .join(" ");
-    // Check if the model returned a refusal or model-not-available message
     if (
       textMsg?.toLowerCase().includes("tidak tersedia") ||
       textMsg?.toLowerCase().includes("not available") ||
       textMsg?.toLowerCase().includes("cannot generate")
     ) {
       const err = new Error(textMsg) as Error & { status: number };
-      err.status = 403; // treat as access denied → fallback to Imagen 3
+      err.status = 403;
       throw err;
     }
     const err = new Error(textMsg || "no_image") as Error & { status: number };
@@ -138,9 +160,18 @@ async function tryGeminiImageModel(key: string, opts: PosterOptions): Promise<st
 }
 
 /**
- * Try Imagen 3 text-to-image (stable, available to AI Studio API keys with billing).
+ * Try Imagen 3 text-to-image.
+ * Note: Imagen 3 only supports AIzaSy standard keys with billing enabled.
+ * AQ. Auth Keys are not supported by Imagen 3.
  */
 async function tryImagen3(key: string, opts: PosterOptions): Promise<string> {
+  // Imagen 3 doesn't support Auth Key (AQ.) format — skip immediately
+  if (isAuthKey(key)) {
+    throw new Error(
+      "Imagen 3 tidak mendukung format Auth Key (AQ...). Gunakan Gemini API Key format AIzaSy dari Google Cloud Console → APIs & Services → Credentials.",
+    );
+  }
+
   const prompt = [
     `Professional advertising poster for a ${opts.productLabel} product.`,
     `Design style: ${opts.styleDescription}.`,
@@ -182,12 +213,10 @@ async function tryImagen3(key: string, opts: PosterOptions): Promise<string> {
     const errText = await res.text();
     const status = res.status;
     if (status === 400)
-      throw new Error(
-        "Prompt tidak valid. Coba sederhanakan teks atau ubah prompt tambahan.",
-      );
+      throw new Error("Prompt tidak valid. Coba sederhanakan teks atau ubah prompt tambahan.");
     if (status === 403)
       throw new Error(
-        "API Key tidak memiliki akses ke model image generation. Pastikan API Key Anda dari Google AI Studio (aistudio.google.com/apikey) dan format key sudah benar (biasanya diawali AIzaSy...). Jika sudah benar, aktifkan billing di Google Cloud Console untuk mengakses Imagen.",
+        "API Key tidak memiliki akses ke Imagen 3. Aktifkan billing di Google Cloud Console atau gunakan key lain.",
       );
     throw new Error(`Imagen error (${status}): ${errText.slice(0, 200)}`);
   }
@@ -195,21 +224,20 @@ async function tryImagen3(key: string, opts: PosterOptions): Promise<string> {
   const data = await res.json();
   const pred = data?.predictions?.[0];
   if (!pred?.bytesBase64Encoded) {
-    throw new Error(
-      "AI tidak mengembalikan gambar. Coba ubah prompt atau ganti foto produk.",
-    );
+    throw new Error("AI tidak mengembalikan gambar. Coba ubah prompt atau ganti foto produk.");
   }
   return `data:${pred.mimeType ?? "image/png"};base64,${pred.bytesBase64Encoded}`;
 }
 
 /**
  * Generate advertising poster.
- * Strategy:
- * 1. Try Gemini 2.0 Flash image generation (image-to-image).
- * 2. If 400/404/403/model-not-available, fall back to Imagen 3 text-to-image.
- *    Note: 400 from Gemini image model can mean the API key type (e.g. AQ. prefix keys)
- *    doesn't support responseModalities image generation — Imagen 3 may still work.
- * Returns the result image as a base64 data URL.
+ *
+ * Strategy for AIzaSy keys:
+ *   1. Gemini 2.0 Flash image gen → fallback to Imagen 3 on 400/403/404/no-image
+ *
+ * Strategy for AQ. Auth Keys:
+ *   1. Gemini 2.0 Flash image gen with Bearer auth (Imagen 3 not supported for AQ.)
+ *      If this fails, show a clear error explaining AQ. limitations.
  */
 export async function generatePosterImage(opts: PosterOptions): Promise<string> {
   const key = getGeminiKey();
@@ -219,38 +247,41 @@ export async function generatePosterImage(opts: PosterOptions): Promise<string> 
     );
   }
 
-  // ── Attempt 1: Gemini 2.0 Flash image generation (image-to-image) ──
+  // ── Attempt 1: Gemini 2.0 Flash image generation ──
   try {
     return await tryGeminiImageModel(key, opts);
   } catch (e) {
     const status = (e as { status?: number }).status;
-    // Fallback conditions:
-    // 400 = request rejected (key type may not support image gen, e.g. AQ. format keys)
-    // 403 = access denied
-    // 404 = model not found
-    // 0   = model returned text instead of image
     const shouldFallback = status === 400 || status === 403 || status === 404 || status === 0;
+
     if (!shouldFallback) {
       if (status === 429)
         throw new Error("Kuota API Key habis. Coba lagi beberapa saat kemudian.");
       throw e;
     }
-    console.warn(
-      "[gemini] Gemini image model not available (status:",
-      status,
-      "), falling back to Imagen 3",
-    );
+
+    // AQ. keys: Imagen 3 tidak tersedia, langsung tampilkan error yang informatif
+    if (isAuthKey(key)) {
+      throw new Error(
+        "Gemini Auth Key (AQ...) belum mendukung image generation secara penuh. " +
+        "Untuk generate poster, gunakan API Key standar (format AIzaSy...) dari " +
+        "Google Cloud Console → APIs & Services → Credentials → Create Credentials → API Key. " +
+        "Atau aktifkan billing di Google Cloud Console agar model image generation dapat diakses.",
+      );
+    }
+
+    console.warn("[gemini] Gemini image model fallback (status:", status, "), trying Imagen 3");
   }
 
-  // ── Attempt 2: Imagen 3 text-to-image ──
+  // ── Attempt 2: Imagen 3 (only for AIzaSy keys) ──
   try {
     return await tryImagen3(key, opts);
   } catch (e) {
     const msg = (e as Error).message ?? "";
-    // If Imagen 3 also fails with access error, give a clear explanation
     if (msg.includes("tidak memiliki akses") || msg.includes("403")) {
       throw new Error(
-        "API Key ini belum mendukung image generation. Pastikan format key benar (AIzaSy...) atau aktifkan billing di Google Cloud Console. Dapatkan key baru di aistudio.google.com/apikey.",
+        "API Key ini belum mendukung image generation. Aktifkan billing di Google Cloud Console " +
+        "atau buat key baru di aistudio.google.com/apikey.",
       );
     }
     throw e;
