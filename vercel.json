@@ -1,7 +1,6 @@
 {
   "functions": {
-    "src/routes/api/*.ts": {
-      "runtime": "nodejs22.x",
+    "api/generate-poster": {
       "maxDuration": 60
     }
   }
