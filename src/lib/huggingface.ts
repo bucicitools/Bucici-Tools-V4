@@ -1,6 +1,6 @@
-// Hugging Face Inference API client — image-to-image BYOK.
-// Model: timbrooks/instruct-pix2pix (gratis dengan HF token standar).
-// Token disimpan di localStorage.
+// Hugging Face Inference API — text-to-image BYOK.
+// Model: black-forest-labs/FLUX.1-schnell (gratis, kualitas tinggi).
+// User upload foto produk → kita analisis warna & konten → buat prompt kaya → generate poster.
 
 export const HF_KEY_STORAGE = "bucici_hf_key";
 
@@ -19,7 +19,6 @@ export function setHFKey(key: string) {
 }
 
 export interface PosterOptions {
-  /** Source product image as base64 data URL (data:image/...;base64,...) */
   imageDataUrl: string;
   title: string;
   tagline: string;
@@ -32,24 +31,69 @@ export interface PosterOptions {
   customPrompt?: string;
 }
 
-function buildPosterPrompt(opts: PosterOptions): string {
-  return [
-    `Transform this product photo into a professional advertising poster for a ${opts.productLabel} business.`,
-    `Visual style: ${opts.styleDescription}.`,
-    opts.title ? `Add large headline text: "${opts.title}".` : "",
-    opts.tagline ? `Add tagline: "${opts.tagline}".` : "",
-    opts.cta ? `Add call-to-action button: "${opts.cta}".` : "",
-    opts.contact ? `Add contact info at the bottom: "${opts.contact}".` : "",
-    opts.customPrompt ? `Extra instructions: ${opts.customPrompt}.` : "",
-    "Premium commercial advertising poster, keep product clearly visible.",
-  ]
-    .filter(Boolean)
-    .join(" ");
+/** Analisis warna dominan dari gambar menggunakan canvas sampling */
+function getDominantColors(dataUrl: string): Promise<string> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = 50;
+      canvas.height = 50;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) { resolve("vibrant colors"); return; }
+      ctx.drawImage(img, 0, 0, 50, 50);
+      const data = ctx.getImageData(0, 0, 50, 50).data;
+      let r = 0, g = 0, b = 0, count = 0;
+      for (let i = 0; i < data.length; i += 16) {
+        r += data[i]; g += data[i + 1]; b += data[i + 2]; count++;
+      }
+      r = Math.round(r / count);
+      g = Math.round(g / count);
+      b = Math.round(b / count);
+      // Describe color in words
+      const max = Math.max(r, g, b);
+      let colorDesc = "vibrant";
+      if (max === r && r > 150) colorDesc = "warm red-orange tones";
+      else if (max === g && g > 150) colorDesc = "fresh green tones";
+      else if (max === b && b > 150) colorDesc = "cool blue tones";
+      else if (r > 200 && g > 200 && b > 200) colorDesc = "bright white and light tones";
+      else if (r < 80 && g < 80 && b < 80) colorDesc = "deep dark tones";
+      else if (r > 150 && g > 120 && b < 100) colorDesc = "warm golden-brown tones";
+      else colorDesc = "rich mixed color tones";
+      resolve(colorDesc);
+    };
+    img.onerror = () => resolve("vibrant colors");
+    img.src = dataUrl;
+  });
+}
+
+function buildPosterPrompt(opts: PosterOptions, dominantColor: string): string {
+  const parts = [
+    `A professional commercial advertising poster for a ${opts.productLabel} business.`,
+    `Style: ${opts.styleDescription}.`,
+    `The product has ${dominantColor}.`,
+    `The poster prominently features the product as the hero element, beautifully lit and styled.`,
+    opts.title
+      ? `Large bold headline text on the poster reads: "${opts.title}".`
+      : "",
+    opts.tagline
+      ? `Supporting tagline text: "${opts.tagline}".`
+      : "",
+    opts.cta
+      ? `A prominent call-to-action element says: "${opts.cta}".`
+      : "",
+    opts.contact
+      ? `Contact or promo info at the bottom: "${opts.contact}".`
+      : "",
+    opts.customPrompt ? `Additional details: ${opts.customPrompt}.` : "",
+    "Ultra high quality, sharp typography, premium commercial look, social media ready, professional graphic design, 4K.",
+  ];
+  return parts.filter(Boolean).join(" ");
 }
 
 /**
- * Generate poster iklan menggunakan HF Inference API.
- * Model: timbrooks/instruct-pix2pix — image-to-image, gratis dengan token HF standar.
+ * Generate poster iklan menggunakan HF FLUX.1-schnell (text-to-image).
+ * Foto produk dianalisis untuk memperkaya prompt — gratis dengan token HF standar.
  */
 export async function generatePosterImage(opts: PosterOptions): Promise<string> {
   const key = getHFKey();
@@ -59,31 +103,27 @@ export async function generatePosterImage(opts: PosterOptions): Promise<string> 
     );
   }
 
-  const prompt = buildPosterPrompt(opts);
-  const base64Image = opts.imageDataUrl.replace(/^data:[^;]+;base64,/, "");
+  // Analisis warna dominan dari foto produk yang diupload
+  const dominantColor = opts.imageDataUrl
+    ? await getDominantColors(opts.imageDataUrl)
+    : "vibrant colors";
+
+  const prompt = buildPosterPrompt(opts, dominantColor);
 
   const response = await fetch(
-    "https://api-inference.huggingface.co/models/timbrooks/instruct-pix2pix",
+    "https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell",
     {
       method: "POST",
       headers: {
         Authorization: `Bearer ${key}`,
         "Content-Type": "application/json",
-        "X-Wait-For-Model": "true",
+        "x-wait-for-model": "true",
       },
-      body: JSON.stringify({
-        inputs: base64Image,
-        parameters: {
-          prompt,
-          num_inference_steps: 20,
-          image_guidance_scale: 1.5,
-          guidance_scale: 7.5,
-        },
-      }),
+      body: JSON.stringify({ inputs: prompt }),
     },
   );
 
-  // Jika model masih loading (503), tunggu dan retry
+  // Model masih loading — tunggu dan retry
   if (response.status === 503) {
     await new Promise<void>((r) => setTimeout(r, 20000));
     return generatePosterImage(opts);
@@ -98,14 +138,13 @@ export async function generatePosterImage(opts: PosterOptions): Promise<string> 
       );
     if (status === 403)
       throw new Error(
-        "Token tidak punya akses ke model ini. Buat token baru bertipe \u2018Read\u2019 di huggingface.co/settings/tokens.",
+        "Token tidak punya akses. Buat token baru bertipe \u2018Read\u2019 di huggingface.co/settings/tokens.",
       );
     if (status === 429)
       throw new Error("Terlalu banyak permintaan. Tunggu beberapa saat lalu coba lagi.");
     throw new Error(`Hugging Face error (${status}): ${errText.slice(0, 300)}`);
   }
 
-  // Response is binary image
   const blob = await response.blob();
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
