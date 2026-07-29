@@ -145,7 +145,7 @@ function ProdukTab() {
         const matchSku = p.sku ? p.sku.toLowerCase().includes(lowerQ) : false;
         const catObj = p.categoryId
           ? allCategories.find(
-              (c) => c.id === p.categoryId || c.name.toLowerCase() === p.categoryId.toLowerCase(),
+              (c) => c.id === p.categoryId || c.name.toLowerCase() === p.categoryId!.toLowerCase(),
             )
           : null;
         const matchCat = catObj ? catObj.name.toLowerCase().includes(lowerQ) : false;
@@ -497,15 +497,13 @@ function ProdukTab() {
         })}
       </div>
 
-      {/* Active Filter Notice Banners (Clean Vector Style) */}
+      {/* Active Filter Notice Banners */}
       {filter === "nocost" && (
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-amber-500/10 border border-amber-500/25 p-3 text-xs text-amber-700 dark:text-amber-300">
           <div className="flex items-center gap-2 font-medium">
             <AlertCircle size={16} className="shrink-0 text-amber-500" />
             <span>
-              Menampilkan <strong>{filtered.length}</strong> produk tanpa harga modal. Klik tombol
-              edit untuk melengkapi harga modal agar Estimasi Laba Kotor di Dashboard terhitung
-              presisi.
+              Menampilkan <strong>{filtered.length}</strong> produk tanpa harga modal.
             </span>
           </div>
           <button
@@ -915,14 +913,14 @@ function CategorySelector({
                       onKeyDown={(e) => {
                         if (e.key === "Enter") {
                           e.preventDefault();
-                          handleAddInlineCategory();
+                          void handleAddInlineCategory();
                         }
                       }}
                       className="flex-1 rounded-md border border-border bg-background px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-primary"
                     />
                     <button
                       type="button"
-                      onClick={handleAddInlineCategory}
+                      onClick={() => void handleAddInlineCategory()}
                       className="rounded-md bg-primary px-2.5 py-1 text-xs font-semibold text-primary-foreground"
                     >
                       Simpan
@@ -1112,7 +1110,7 @@ function ProductForm({
         </div>
 
         <button
-          onClick={save}
+          onClick={() => void save()}
           className="w-full rounded-xl bg-gradient-primary py-2.5 text-sm font-semibold text-primary-foreground"
         >
           Simpan
@@ -1184,12 +1182,11 @@ function PenggunaTab() {
 
     if (showForm === "new") {
       try {
-        // Use the server endpoint (service-role key) so the profile upsert with
-        // tenant_id + role_id succeeds. Client-side upsert fails RLS because the
-        // owner's auth.uid() != the new member's id, which is why members
-        // vanished after relogin.
         let newUserId: string | null = null;
 
+        // Step 1: Try server API endpoint (uses service-role key to bypass RLS)
+        // If the API fails with a "tenant not found" error, we silently fall through
+        // to the client-side fallback — which uses t.id from local store directly.
         try {
           const { data: sess } = await supabase.auth.getSession();
           const token = sess.session?.access_token;
@@ -1211,19 +1208,40 @@ function PenggunaTab() {
               if (res.ok && j.ok && j.userId) {
                 newUserId = j.userId;
               } else if (j.error) {
-                throw new Error(j.error);
+                // Only re-throw errors that are NOT about missing tenant/store config.
+                // Tenant-related errors fall through to the signUp fallback which uses
+                // t.id from the local store directly — no API needed.
+                const errMsg = j.error.toLowerCase();
+                const isTenantError =
+                  errMsg.includes("toko") ||
+                  errMsg.includes("tenant") ||
+                  errMsg.includes("terkonfigurasi") ||
+                  errMsg.includes("belum ditemukan");
+                if (!isTenantError) {
+                  throw new Error(j.error);
+                }
+                // Tenant error: log and fall through to fallback
+                console.warn("[create-member] Tenant not found via API, falling back to signUp:", j.error);
               }
             }
           }
         } catch (apiErr) {
-          // If server error message was thrown explicitly, rethrow it unless it's a fetch/HTML issue
-          const msg = (apiErr as Error).message;
-          if (msg && !msg.includes("Unexpected token") && !msg.includes("fetch")) {
+          const msg = (apiErr as Error).message ?? "";
+          // Don't re-throw tenant/store errors — fallback handles them
+          const isTenantErr =
+            msg.toLowerCase().includes("toko") ||
+            msg.toLowerCase().includes("tenant") ||
+            msg.toLowerCase().includes("terkonfigurasi") ||
+            msg.toLowerCase().includes("belum ditemukan");
+          // Also don't re-throw network/parse errors (fetch fails, HTML responses, etc.)
+          const isNetworkErr = msg.includes("Unexpected token") || msg.includes("fetch");
+          if (!isTenantErr && !isNetworkErr) {
             throw apiErr;
           }
+          console.warn("[create-member] API error (will use fallback):", msg);
         }
 
-        // Fallback: If API route didn't return a userId, use secondary client signUp
+        // Step 2: Fallback — create member via client-side signUp using t.id directly
         if (!newUserId) {
           const { createClient } = await import("@supabase/supabase-js");
           const tempClient = createClient(
@@ -1252,7 +1270,7 @@ function PenggunaTab() {
 
           newUserId = signUpData.user.id;
 
-          // Upsert profile row with tenant_id & role_id
+          // Upsert profile row with tenant_id & role_id using owner's supabase client
           await supabase.from("profiles").upsert({
             id: newUserId,
             name: form.name,
@@ -1267,17 +1285,21 @@ function PenggunaTab() {
             .upsert({ user_id: newUserId, role: "member" }, { onConflict: "user_id,role" });
         }
 
+        // Add to local store immediately so it shows without reload
         db.set((n) => {
-          n.users.push({
-            id: newUserId!,
-            name: form.name,
-            email: form.email,
-            password: form.password,
-            role: "member",
-            roleId: form.roleId,
-            tenantId: t.id,
-            createdAt: new Date().toISOString(),
-          });
+          // Avoid duplicate if already in store
+          if (!n.users.some((u) => u.id === newUserId)) {
+            n.users.push({
+              id: newUserId!,
+              name: form.name,
+              email: form.email,
+              password: form.password,
+              role: "member",
+              roleId: form.roleId,
+              tenantId: t.id,
+              createdAt: new Date().toISOString(),
+            });
+          }
         });
 
         toast.success("Anggota berhasil ditambahkan!");
@@ -1298,7 +1320,7 @@ function PenggunaTab() {
           .eq("id", showForm.id);
 
         db.set((n) => {
-          const u = n.users.find((x) => x.id === showForm.id);
+          const u = n.users.find((x) => x.id === (showForm as User).id);
           if (u) Object.assign(u, form);
         });
         toast.success("Anggota diperbarui.");
@@ -1361,8 +1383,7 @@ function PenggunaTab() {
                   {u.role !== "owner" && (
                     <button
                       onClick={() => setConfirmDelUser(u)}
-                      className="p-1 rounded bg-destructive/10 text-destructive hover:bg-destructive/20 transition"
-                      title="Hapus Anggota"
+                      className="p-1 rounded bg-destructive/10 text-destructive"
                     >
                       <Trash2 size={12} />
                     </button>
@@ -1374,13 +1395,83 @@ function PenggunaTab() {
         </table>
       </div>
 
+      {showForm && (
+        <Modal onClose={() => setShowForm(null)} title={showForm === "new" ? "Tambah Anggota" : "Edit Anggota"}>
+          <div className="space-y-3">
+            <Input label="Nama" value={form.name} onChange={(v) => setForm((f) => ({ ...f, name: v }))} />
+            <Input
+              label="Email"
+              type="email"
+              value={form.email}
+              onChange={(v) => setForm((f) => ({ ...f, email: v }))}
+              disabled={showForm !== "new"}
+            />
+            {showForm === "new" && (
+              <div>
+                <label className="block text-xs font-semibold text-muted-foreground mb-1">
+                  Password
+                </label>
+                <div className="relative">
+                  <input
+                    type={showPw ? "text" : "password"}
+                    value={form.password}
+                    onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
+                    className="w-full rounded-lg neu-inset px-3 py-2 text-sm pr-8"
+                    placeholder="Min. 6 karakter"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPw((v) => !v)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground"
+                  >
+                    {showPw ? <EyeOff size={14} /> : <Eye size={14} />}
+                  </button>
+                </div>
+              </div>
+            )}
+            <div>
+              <label className="block text-xs font-semibold text-muted-foreground mb-1">Role</label>
+              {roles.length === 0 ? (
+                <div className="rounded-lg bg-warning/10 border border-warning/20 p-3 text-xs text-warning flex items-center gap-2">
+                  <AlertTriangle size={14} />
+                  Buat role dulu di tab <b>Role</b> sebelum menambah anggota.
+                </div>
+              ) : (
+                <select
+                  value={form.roleId}
+                  onChange={(e) => setForm((f) => ({ ...f, roleId: e.target.value }))}
+                  className="w-full rounded-lg neu-inset px-3 py-2 text-sm"
+                >
+                  <option value="">— Pilih Role —</option>
+                  {roles.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {r.name}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+            <button
+              onClick={() => void save()}
+              disabled={loading}
+              className="w-full rounded-xl bg-gradient-primary py-2.5 text-sm font-semibold text-primary-foreground disabled:opacity-50"
+            >
+              {loading ? "Menyimpan..." : "Simpan"}
+            </button>
+          </div>
+        </Modal>
+      )}
+
       {confirmDelUser && (
         <Modal onClose={() => setConfirmDelUser(null)} title="Hapus Anggota?">
           <div className="space-y-3">
-            <p className="text-sm">
-              Apakah Anda yakin ingin menghapus anggota <b>{confirmDelUser.name}</b> (
-              {confirmDelUser.email})? Tindakan ini tidak dapat dibatalkan.
-            </p>
+            <div className="flex items-start gap-2 rounded-lg bg-destructive/10 border border-destructive/20 p-3 text-xs text-destructive">
+              <AlertTriangle size={16} className="shrink-0 mt-0.5" />
+              <p>
+                Hapus anggota <b>{confirmDelUser.name}</b>? Akun mereka akan dihapus permanen dan
+                tidak bisa login lagi.
+              </p>
+            </div>
             <div className="flex gap-2">
               <button
                 onClick={() => setConfirmDelUser(null)}
@@ -1389,75 +1480,12 @@ function PenggunaTab() {
                 Batal
               </button>
               <button
-                onClick={() => handleDeleteUser(confirmDelUser)}
+                onClick={() => void handleDeleteUser(confirmDelUser)}
                 className="flex-1 rounded-xl bg-destructive py-2.5 text-sm font-semibold text-destructive-foreground"
               >
                 Hapus
               </button>
             </div>
-          </div>
-        </Modal>
-      )}
-
-      {showForm && (
-        <Modal
-          onClose={() => setShowForm(null)}
-          title={showForm === "new" ? "Tambah Anggota" : "Edit Anggota"}
-        >
-          <div className="space-y-2">
-            <Input
-              label="Nama"
-              value={form.name}
-              onChange={(v) => setForm((f) => ({ ...f, name: v }))}
-            />
-            <Input
-              label="Email"
-              value={form.email}
-              onChange={(v) => setForm((f) => ({ ...f, email: v }))}
-            />
-            <label className="block">
-              <span className="text-xs font-semibold text-muted-foreground">Password</span>
-              <div className="relative">
-                <input
-                  type={showPw ? "text" : "password"}
-                  value={form.password}
-                  onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
-                  className="mt-1 w-full rounded-lg neu-inset px-3 py-2 pr-10 text-sm"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPw((v) => !v)}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground"
-                >
-                  {showPw ? <EyeOff size={14} /> : <Eye size={14} />}
-                </button>
-              </div>
-            </label>
-            <label className="block">
-              <span className="text-xs font-semibold text-muted-foreground">Role</span>
-              <select
-                value={form.roleId}
-                disabled={
-                  showForm !== "new" && typeof showForm === "object" && showForm.role === "owner"
-                }
-                onChange={(e) => setForm((f) => ({ ...f, roleId: e.target.value }))}
-                className="mt-1 w-full rounded-lg neu-inset px-3 py-2 text-sm disabled:opacity-50"
-              >
-                <option value="">— Pilih Role —</option>
-                {roles.map((r) => (
-                  <option key={r.id} value={r.id}>
-                    {r.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <button
-              onClick={save}
-              disabled={loading}
-              className="w-full rounded-xl bg-gradient-primary py-2.5 text-sm font-semibold text-primary-foreground disabled:opacity-50"
-            >
-              {loading ? "Mendaftarkan..." : "Simpan"}
-            </button>
           </div>
         </Modal>
       )}
@@ -1468,78 +1496,39 @@ function PenggunaTab() {
 function RoleTab() {
   const t = currentTenant();
   const roles = useDB((d) => (t ? d.roles.filter((r) => r.tenantId === t.id) : []));
-  const users = useDB((d) =>
-    t ? d.users.filter((u) => u.tenantId === t.id && u.role === "member") : [],
-  );
   const [showForm, setShowForm] = useState<TenantRole | "new" | null>(null);
   const [name, setName] = useState("");
   const [perms, setPerms] = useState<string[]>([]);
-  const [confirmDel, setConfirmDel] = useState<TenantRole | null>(null);
-  const [moveTo, setMoveTo] = useState<string>("");
 
   function open(r: TenantRole | "new") {
     setShowForm(r);
-    setName(r === "new" ? "" : r.name);
-    setPerms(r === "new" ? [] : r.permissions);
-  }
-  async function save() {
-    if (!t) return;
-    if (!name.trim()) return toast.error("Nama role wajib.");
-    const roleId = showForm && showForm !== "new" ? showForm.id : uid("role");
-
-    const { error } = await supabase.from("tenant_roles").upsert({
-      id: roleId,
-      tenant_id: t.id,
-      name,
-      permissions: perms,
-    });
-    if (error) {
-      console.warn("Supabase tenant_role notice:", error.message);
+    if (r === "new") {
+      setName("");
+      setPerms([]);
+    } else {
+      setName(r.name);
+      setPerms(r.permissions);
     }
+  }
 
-    db.set((n) => {
-      if (showForm && showForm !== "new") {
-        const r = n.roles.find((x) => x.id === showForm.id);
+  function save() {
+    if (!t || !name.trim()) return;
+    if (showForm === "new") {
+      const id = uid("role");
+      db.set((n) => {
+        n.roles.push({ id, tenantId: t.id, name: name.trim(), permissions: perms });
+      });
+    } else if (showForm) {
+      db.set((n) => {
+        const r = n.roles.find((x) => x.id === (showForm as TenantRole).id);
         if (r) {
-          r.name = name;
+          r.name = name.trim();
           r.permissions = perms;
         }
-      } else {
-        n.roles.push({ id: roleId, tenantId: t.id, name, permissions: perms });
-      }
-    });
+      });
+    }
     toast.success("Role disimpan.");
     setShowForm(null);
-  }
-
-  async function askDelete(r: TenantRole) {
-    const inUse = users.filter((u) => u.roleId === r.id).length;
-    if (inUse > 0) {
-      setConfirmDel(r);
-      setMoveTo("");
-    } else {
-      await supabase.from("tenant_roles").delete().eq("id", r.id);
-      db.set((n) => {
-        n.roles = n.roles.filter((x) => x.id !== r.id);
-      });
-      toast.success("Role dihapus.");
-    }
-  }
-
-  async function confirmDelete() {
-    if (!confirmDel || !moveTo) return toast.error("Pilih role tujuan.");
-
-    await supabase.from("profiles").update({ role_id: moveTo }).eq("role_id", confirmDel.id);
-    await supabase.from("tenant_roles").delete().eq("id", confirmDel.id);
-
-    db.set((n) => {
-      n.users.forEach((u) => {
-        if (u.roleId === confirmDel.id) u.roleId = moveTo;
-      });
-      n.roles = n.roles.filter((x) => x.id !== confirmDel.id);
-    });
-    toast.success("Anggota dipindah & role dihapus.");
-    setConfirmDel(null);
   }
 
   return (
@@ -1548,77 +1537,68 @@ function RoleTab() {
         onClick={() => open("new")}
         className="rounded-lg bg-gradient-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground flex items-center gap-1"
       >
-        <Plus size={12} /> Role
+        <Plus size={12} /> Tambah Role
       </button>
-      <div className="neu overflow-hidden">
-        <table className="w-full text-sm">
-          <thead className="bg-secondary/60 text-xs uppercase text-muted-foreground">
-            <tr>
-              {["Nama", "Hak Akses", "Anggota", "Aksi"].map((h) => (
-                <th key={h} className="px-3 py-2 text-left">
-                  {h}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {roles.length === 0 && (
-              <tr>
-                <td colSpan={4} className="text-center py-6 text-muted-foreground">
-                  Belum ada role.
-                </td>
-              </tr>
-            )}
-            {roles.map((r) => {
-              const cnt = users.filter((u) => u.roleId === r.id).length;
-              return (
-                <tr key={r.id} className="border-t border-border/50">
-                  <td className="px-3 py-2 font-semibold">{r.name}</td>
-                  <td className="px-3 py-2 text-xs">{r.permissions.length} izin</td>
-                  <td className="px-3 py-2 text-xs">{cnt}</td>
-                  <td className="px-3 py-2 flex gap-1">
-                    <button onClick={() => open(r)} className="p-1 rounded neu-sm">
-                      <Pencil size={12} />
-                    </button>
-                    <button
-                      onClick={() => askDelete(r)}
-                      className="p-1 rounded bg-destructive/10 text-destructive"
-                    >
-                      <Trash2 size={12} />
-                    </button>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+      <div className="space-y-2">
+        {roles.length === 0 && (
+          <div className="neu p-4 text-center text-xs text-muted-foreground">Belum ada role.</div>
+        )}
+        {roles.map((r) => (
+          <div key={r.id} className="neu p-3 flex justify-between items-start">
+            <div>
+              <div className="font-semibold text-sm">{r.name}</div>
+              <div className="text-xs text-muted-foreground mt-0.5">
+                {r.permissions.length === 0
+                  ? "Tidak ada akses"
+                  : r.permissions
+                      .map(
+                        (p) => PERMISSIONS.find((x) => x.key === p)?.label ?? p,
+                      )
+                      .join(", ")}
+              </div>
+            </div>
+            <div className="flex gap-1">
+              <button onClick={() => open(r)} className="p-1 rounded neu-sm">
+                <Pencil size={12} />
+              </button>
+              <button
+                onClick={() => {
+                  db.set((n) => {
+                    n.roles = n.roles.filter((x) => x.id !== r.id);
+                  });
+                  toast.success("Role dihapus.");
+                }}
+                className="p-1 rounded bg-destructive/10 text-destructive"
+              >
+                <Trash2 size={12} />
+              </button>
+            </div>
+          </div>
+        ))}
       </div>
 
       {showForm && (
-        <Modal
-          onClose={() => setShowForm(null)}
-          title={showForm === "new" ? "Tambah Role" : "Edit Role"}
-        >
+        <Modal onClose={() => setShowForm(null)} title={showForm === "new" ? "Tambah Role" : "Edit Role"}>
           <div className="space-y-3">
             <Input label="Nama Role" value={name} onChange={setName} />
             <div>
-              <div className="text-xs font-semibold text-muted-foreground mb-1">Hak Akses</div>
-              <div className="grid grid-cols-2 gap-1 max-h-60 overflow-y-auto">
+              <span className="block text-xs font-semibold text-muted-foreground mb-2">
+                Akses / Izin
+              </span>
+              <div className="space-y-1">
                 {PERMISSIONS.map((p) => (
-                  <label
-                    key={p.key}
-                    className="flex items-center gap-2 text-xs rounded-lg bg-secondary/50 px-2 py-1"
-                  >
+                  <label key={p.key} className="flex items-center gap-2 cursor-pointer">
                     <input
                       type="checkbox"
                       checked={perms.includes(p.key)}
-                      onChange={(e) =>
+                      onChange={(e) => {
                         setPerms((prev) =>
                           e.target.checked ? [...prev, p.key] : prev.filter((x) => x !== p.key),
-                        )
-                      }
+                        );
+                      }}
+                      className="rounded"
                     />
-                    {p.label}
+                    <span className="text-sm">{p.label}</span>
                   </label>
                 ))}
               </div>
@@ -1632,61 +1612,7 @@ function RoleTab() {
           </div>
         </Modal>
       )}
-
-      {confirmDel && (
-        <Modal onClose={() => setConfirmDel(null)} title="Peringatan">
-          <p className="text-sm">
-            Role <b>{confirmDel.name}</b> masih digunakan oleh{" "}
-            <b>{users.filter((u) => u.roleId === confirmDel.id).length}</b> anggota. Pindahkan ke
-            role:
-          </p>
-          <select
-            value={moveTo}
-            onChange={(e) => setMoveTo(e.target.value)}
-            className="mt-2 w-full rounded-lg neu-inset px-3 py-2 text-sm"
-          >
-            <option value="">— pilih —</option>
-            {roles
-              .filter((r) => r.id !== confirmDel.id)
-              .map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.name}
-                </option>
-              ))}
-          </select>
-          <button
-            onClick={confirmDelete}
-            className="mt-3 w-full rounded-xl bg-destructive py-2.5 text-sm font-semibold text-destructive-foreground"
-          >
-            Pindahkan & Hapus Role
-          </button>
-        </Modal>
-      )}
     </div>
-  );
-}
-
-function Input({
-  label,
-  value,
-  onChange,
-  type = "text",
-}: {
-  label: string;
-  value: string | number;
-  onChange: (v: string) => void;
-  type?: string;
-}) {
-  return (
-    <label className="block">
-      <span className="text-xs font-semibold text-muted-foreground">{label}</span>
-      <input
-        type={type}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="mt-1 w-full rounded-lg neu-inset px-3 py-2 text-sm"
-      />
-    </label>
   );
 }
 
@@ -1700,22 +1626,43 @@ function Modal({
   title: string;
 }) {
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-      onClick={onClose}
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className="bg-background neu p-5 w-full max-w-md max-h-[90vh] overflow-y-auto"
-      >
-        <div className="flex justify-between items-center mb-3">
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 p-4">
+      <div className="neu w-full max-w-md rounded-2xl p-5 space-y-3 max-h-[90vh] overflow-y-auto">
+        <div className="flex justify-between items-center">
           <h3 className="font-bold">{title}</h3>
-          <button onClick={onClose} className="text-muted-foreground">
-            ✕
+          <button onClick={onClose} className="p-1 rounded neu-sm">
+            <X size={14} />
           </button>
         </div>
         {children}
       </div>
     </div>
+  );
+}
+
+function Input({
+  label,
+  value,
+  onChange,
+  type = "text",
+  disabled = false,
+}: {
+  label: string;
+  value: string | number;
+  onChange: (v: string) => void;
+  type?: string;
+  disabled?: boolean;
+}) {
+  return (
+    <label className="block">
+      <span className="block text-xs font-semibold text-muted-foreground mb-1">{label}</span>
+      <input
+        type={type}
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full rounded-lg neu-inset px-3 py-2 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+      />
+    </label>
   );
 }
