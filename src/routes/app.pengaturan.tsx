@@ -164,6 +164,18 @@ function Pengaturan() {
         s.stock = s.stock.filter((stk) => stk.tenantId !== tenant.id);
       });
 
+      // 6. Bersihkan localStorage agar recovery logic di hydrateFromSupabase
+      //    tidak re-upload data lama ke Supabase ketika user reload / login ulang.
+      //    Ini adalah root cause "kas muncul kembali setelah dihapus".
+      if (typeof window !== "undefined") {
+        localStorage.removeItem(`bucici_db_v2_${tenant.id}`);
+        localStorage.removeItem("bucici_pending_cash");
+        localStorage.removeItem("bucici_pending_tx");
+        localStorage.removeItem("bucici_pending_stock");
+        localStorage.removeItem("bucici_pending_prod");
+        localStorage.removeItem("bucici_pending_cat");
+      }
+
       toast.success("Data keuangan berhasil dihapus!");
       setShowResetModal(false);
       setResetConfirmInput("");
@@ -363,15 +375,15 @@ function Pengaturan() {
             <div className="rounded-lg bg-destructive/8 border border-destructive/20 p-3 space-y-1 text-xs">
               <p className="font-semibold text-destructive">Data yang akan DIHAPUS permanen:</p>
               <ul className="list-disc list-inside text-muted-foreground space-y-0.5">
-                <li>Semua riwayat transaksi & item pesanan</li>
+                <li>Semua riwayat transaksi &amp; item pesanan</li>
                 <li>Semua catatan kas (isi kas, uang masuk/keluar)</li>
                 <li>Semua riwayat gerakan stok</li>
               </ul>
               <p className="font-semibold text-success mt-2">Data yang TIDAK terhapus:</p>
               <ul className="list-disc list-inside text-muted-foreground space-y-0.5">
-                <li>Produk & kategori</li>
-                <li>Anggota & role</li>
-                <li>Data toko & lisensi</li>
+                <li>Produk &amp; kategori</li>
+                <li>Anggota &amp; role</li>
+                <li>Data toko &amp; lisensi</li>
               </ul>
             </div>
 
