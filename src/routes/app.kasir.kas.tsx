@@ -61,18 +61,43 @@ function KasPage() {
   const [showFilter, setShowFilter] = useState(false);
 
   const saldo = useMemo(() => {
-    const sorted = [...allEntries].sort(
-      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
-    );
+    // Gabungkan entri kas + transaksi tunai ke satu timeline, proses secara kronologis.
+    // Ini memastikan bahwa ketika "Reset Saldo" dilakukan, transaksi tunai yang terjadi
+    // SEBELUM reset tidak ikut terhitung — seolah uang di laci sudah diambil semua.
+    type Event =
+      | { time: number; kind: "entry"; entry: (typeof allEntries)[number] }
+      | { time: number; kind: "tx"; total: number };
+
+    const events: Event[] = [
+      ...allEntries.map((c) => ({
+        time: new Date(c.createdAt).getTime(),
+        kind: "entry" as const,
+        entry: c,
+      })),
+      ...txs.map((tx) => ({
+        time: new Date(tx.createdAt).getTime(),
+        kind: "tx" as const,
+        total: tx.total,
+      })),
+    ].sort((a, b) => a.time - b.time);
+
     let s = 0;
-    for (const c of sorted) {
-      if (c.type === "fill") {
-        if (c.reset) s = c.amount;
-        else s += c.amount;
-      } else if (c.type === "in") s += c.amount;
-      else s -= c.amount;
+    for (const ev of events) {
+      if (ev.kind === "tx") {
+        s += ev.total;
+      } else {
+        const c = ev.entry;
+        if (c.type === "fill") {
+          // Reset: buang semua akumulasi sebelumnya (termasuk transaksi tunai)
+          if (c.reset) s = c.amount;
+          else s += c.amount;
+        } else if (c.type === "in") {
+          s += c.amount;
+        } else {
+          s -= c.amount;
+        }
+      }
     }
-    s += txs.reduce((a, b) => a + b.total, 0);
     return s;
   }, [allEntries, txs]);
 
@@ -113,83 +138,80 @@ function KasPage() {
 
   return (
     <div className="space-y-4">
-      <div className="neu p-5">
-        <div className="text-xs uppercase text-muted-foreground font-semibold">
-          Saldo Kas Saat Ini
-        </div>
-        <div className="mt-1 text-3xl font-bold text-primary">{formatIDR(saldo)}</div>
-        <div className="text-xs text-muted-foreground mt-1">
+      <div className="neu p-4 space-y-1">
+        <div className="text-xs text-muted-foreground">Saldo Kas Saat Ini</div>
+        <div className="text-2xl font-bold text-primary">{formatIDR(saldo)}</div>
+        <div className="text-[10px] text-muted-foreground">
           Akumulasi semua isi kas + uang masuk + penjualan tunai − uang keluar
         </div>
       </div>
 
-      <div className="flex neu-inset rounded-xl p-1">
-        {(["fill", "in", "out"] as const).map((k) => (
-          <button
-            key={k}
-            onClick={() => setTab(k)}
-            className={`flex-1 py-2 rounded-lg text-xs font-semibold ${tab === k ? "bg-gradient-primary text-primary-foreground" : ""}`}
-          >
-            {k === "fill" ? "Isi Kas" : k === "in" ? "Uang Masuk" : "Uang Keluar"}
-          </button>
-        ))}
-      </div>
-
       <div className="neu p-4 space-y-3">
-        <input
-          type="number"
-          value={amount || ""}
-          onChange={(e) => setAmount(+e.target.value)}
-          placeholder="Nominal"
-          className="w-full rounded-lg neu-inset px-3 py-2"
-        />
-        {tab !== "fill" && (
+        <div className="flex neu-inset rounded-xl p-1">
+          {(["fill", "in", "out"] as const).map((k) => (
+            <button
+              key={k}
+              onClick={() => setTab(k)}
+              className={`flex-1 py-2 rounded-lg text-xs font-semibold ${tab === k ? "bg-gradient-primary text-primary-foreground" : ""}`}
+            >
+              {k === "fill" ? "Isi Kas" : k === "in" ? "Uang Masuk" : "Uang Keluar"}
+            </button>
+          ))}
+        </div>
+
+        <div className="space-y-2">
           <input
-            value={note}
-            onChange={(e) => setNote(e.target.value)}
-            placeholder="Catatan (wajib)"
+            type="number"
+            value={amount || ""}
+            onChange={(e) => setAmount(+e.target.value)}
+            placeholder="Nominal"
             className="w-full rounded-lg neu-inset px-3 py-2"
           />
-        )}
-        {tab === "fill" && (
-          <div className="space-y-1">
-            <label className="flex items-start gap-2 text-sm cursor-pointer">
-              <input
-                type="checkbox"
-                checked={reset}
-                onChange={(e) => setReset(e.target.checked)}
-                className="mt-0.5"
-              />
-              <span>
-                <span className="font-semibold">Reset saldo laci</span>
-                <span className="text-muted-foreground">
-                  {" "}
-                  — centang ini jika Anda sudah mengambil semua uang dari laci dan ingin mengisi ulang dari awal (misalnya untuk modal kembalian besok).
+          {tab !== "fill" && (
+            <input
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder="Catatan (wajib)"
+              className="w-full rounded-lg neu-inset px-3 py-2"
+            />
+          )}
+          {tab === "fill" && (
+            <div className="space-y-2">
+              <label className="flex items-start gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={reset}
+                  onChange={(e) => setReset(e.target.checked)}
+                  className="mt-0.5"
+                />
+                <span className="text-xs">
+                  <span className="font-semibold">Reset saldo laci</span>{" "}
+                  — centang ini jika Anda sudah mengambil semua uang dari laci dan ingin mengisi
+                  ulang dari awal (misalnya untuk modal kembalian besok).
                 </span>
-              </span>
-            </label>
-            {reset && (
-              <div className="rounded-lg bg-warning/10 border border-warning/20 p-2 text-xs text-warning">
-                ⚠️ Saldo laci akan direset ke nominal yang Anda masukkan. Riwayat sebelumnya tetap tersimpan.
-              </div>
-            )}
-          </div>
-        )}
-        <button
-          onClick={submit}
-          className="rounded-xl bg-gradient-primary px-5 py-2.5 text-sm font-semibold text-primary-foreground"
-        >
-          Simpan
-        </button>
+              </label>
+              {reset && (
+                <div className="rounded-lg bg-warning/10 border border-warning/20 px-3 py-2 text-xs text-warning">
+                  ⚠️ Saldo laci akan direset ke nominal yang Anda masukkan. Transaksi tunai
+                  sebelum reset tidak akan ikut terhitung lagi. Riwayat tetap tersimpan.
+                </div>
+              )}
+            </div>
+          )}
+          <button
+            onClick={submit}
+            className="w-full rounded-xl bg-gradient-primary py-2.5 text-sm font-semibold text-primary-foreground"
+          >
+            Simpan
+          </button>
+        </div>
       </div>
 
       {/* Riwayat Kas */}
-      <div className="space-y-2">
-        <div className="flex items-center justify-between px-1">
-          <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-            Riwayat Kas
-          </span>
-          <div className="flex gap-2">
+      <div className="neu p-4 space-y-3">
+        <div className="flex items-center justify-between gap-2">
+          <div className="font-semibold text-sm">Riwayat Kas</div>
+          <div className="flex gap-1.5">
             <button
               onClick={() => setShowFilter((v) => !v)}
               className={`flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold ${
@@ -208,15 +230,15 @@ function KasPage() {
         </div>
 
         {showFilter && (
-          <div className="neu p-3 flex flex-wrap gap-2 items-center">
-            <span className="text-xs font-semibold text-muted-foreground">Dari:</span>
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <span>Dari:</span>
             <input
               type="date"
               value={filterFrom}
               onChange={(e) => setFilterFrom(e.target.value)}
               className="rounded-lg neu-inset px-2 py-1 text-xs"
             />
-            <span className="text-xs font-semibold text-muted-foreground">Sampai:</span>
+            <span>Sampai:</span>
             <input
               type="date"
               value={filterTo}
@@ -231,19 +253,17 @@ function KasPage() {
                 Reset
               </button>
             )}
-            <span className="text-xs text-muted-foreground ml-auto">
-              {filteredEntries.length} entri
-            </span>
+            <span className="text-muted-foreground">{filteredEntries.length} entri</span>
           </div>
         )}
 
-        <div className="neu overflow-hidden">
-          <table className="w-full text-sm">
-            <thead className="bg-secondary/60 text-xs uppercase text-muted-foreground">
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead className="bg-secondary/60 text-muted-foreground">
               <tr>
                 <th className="px-3 py-2 text-left">Waktu</th>
                 <th className="px-3 py-2 text-left">Tipe</th>
-                <th className="px-3 py-2 text-right">Nominal</th>
+                <th className="px-3 py-2 text-left">Nominal</th>
                 <th className="px-3 py-2 text-left">Catatan</th>
               </tr>
             </thead>
@@ -257,17 +277,19 @@ function KasPage() {
               )}
               {filteredEntries.map((c) => (
                 <tr key={c.id} className="border-t border-border/50">
-                  <td className="px-3 py-2 text-xs">
+                  <td className="px-3 py-2">
                     {new Date(c.createdAt).toLocaleString("id-ID")}
                   </td>
                   <td className="px-3 py-2">
                     <span
-                      className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
-                        c.type === "out"
-                          ? "bg-destructive/15 text-destructive"
+                      className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                        c.type === "fill"
+                          ? c.reset
+                            ? "bg-warning/15 text-warning"
+                            : "bg-primary/10 text-primary"
                           : c.type === "in"
-                          ? "bg-success/15 text-success"
-                          : "bg-primary/15 text-primary"
+                            ? "bg-success/15 text-success"
+                            : "bg-destructive/15 text-destructive"
                       }`}
                     >
                       {c.type === "fill"
@@ -275,12 +297,12 @@ function KasPage() {
                           ? "Reset & Isi"
                           : "Isi Kas"
                         : c.type === "in"
-                        ? "Masuk"
-                        : "Keluar"}
+                          ? "Masuk"
+                          : "Keluar"}
                     </span>
                   </td>
-                  <td className="px-3 py-2 text-right font-semibold">{formatIDR(c.amount)}</td>
-                  <td className="px-3 py-2 text-xs">{c.note ?? "—"}</td>
+                  <td className="px-3 py-2 font-semibold">{formatIDR(c.amount)}</td>
+                  <td className="px-3 py-2 text-muted-foreground">{c.note ?? "—"}</td>
                 </tr>
               ))}
             </tbody>
