@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 
 // Server-side proxy ke Hugging Face API.
 // Menghindari CORS karena request dilakukan dari server, bukan browser.
+// Menggunakan Web API (btoa/Uint8Array) agar kompatibel dengan Edge runtime.
 export const Route = createFileRoute("/api/generate-poster")({
   server: {
     handlers: {
@@ -44,7 +45,7 @@ export const Route = createFileRoute("/api/generate-poster")({
           if (!hfResponse.ok) {
             const errText = await hfResponse.text();
             const status = hfResponse.status;
-            let message = `Hugging Face error (${status})`;
+            let message: string;
             if (status === 401) message = "Token Hugging Face tidak valid. Cek kembali token Anda.";
             else if (status === 403) message = "Token tidak punya akses. Buat token baru bertipe Read.";
             else if (status === 429) message = "Terlalu banyak permintaan. Tunggu sebentar lalu coba lagi.";
@@ -52,15 +53,21 @@ export const Route = createFileRoute("/api/generate-poster")({
             return Response.json({ error: message }, { status });
           }
 
-          // Kembalikan gambar sebagai base64 JSON
+          // Convert binary image ke base64 menggunakan Web API (Edge-compatible)
           const imageBuffer = await hfResponse.arrayBuffer();
-          const base64 = Buffer.from(imageBuffer).toString("base64");
+          const uint8 = new Uint8Array(imageBuffer);
+          let binary = "";
+          for (let i = 0; i < uint8.byteLength; i++) {
+            binary += String.fromCharCode(uint8[i]);
+          }
+          const base64 = btoa(binary);
           const contentType = hfResponse.headers.get("content-type") ?? "image/jpeg";
 
           return Response.json({ image: `data:${contentType};base64,${base64}` });
         } catch (err) {
           console.error("[generate-poster proxy error]", err);
-          return Response.json({ error: "Terjadi kesalahan server. Coba lagi." }, { status: 500 });
+          const message = err instanceof Error ? err.message : "Unknown error";
+          return Response.json({ error: `Kesalahan server: ${message}` }, { status: 500 });
         }
       },
     },
