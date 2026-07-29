@@ -11,10 +11,12 @@ import {
   Percent,
   Trash2,
   AlertTriangle,
+  Image,
 } from "lucide-react";
 import { toast } from "sonner";
 import { currentUser, currentTenant, db } from "@/lib/store";
 import { supabase } from "@/integrations/supabase/client";
+import { getReplicateKey, setReplicateKey } from "@/lib/replicate";
 
 export const Route = createFileRoute("/app/pengaturan")({ component: Pengaturan });
 
@@ -23,6 +25,10 @@ function Pengaturan() {
   const tenant = currentTenant();
   const [key, setKey] = useState(me?.geminiApiKey ?? "");
   const [show, setShow] = useState(false);
+
+  // Replicate key state (localStorage-based)
+  const [replicateKey, setReplicateKeyState] = useState(getReplicateKey() ?? "");
+  const [showReplicate, setShowReplicate] = useState(false);
 
   const [oldPassword, setOldPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -45,6 +51,15 @@ function Pengaturan() {
       if (u) u.geminiApiKey = key.trim() || undefined;
     });
     toast.success(key ? "Kunci Gemini pribadi tersimpan." : "Kunci Gemini pribadi dihapus.");
+  }
+
+  function saveReplicateKey() {
+    setReplicateKey(replicateKey);
+    toast.success(
+      replicateKey.trim()
+        ? "Kunci Replicate tersimpan. Siap generate poster!"
+        : "Kunci Replicate dihapus.",
+    );
   }
 
   async function handleUpdatePassword(e: React.FormEvent) {
@@ -164,9 +179,7 @@ function Pengaturan() {
         s.stock = s.stock.filter((stk) => stk.tenantId !== tenant.id);
       });
 
-      // 6. Bersihkan localStorage agar recovery logic di hydrateFromSupabase
-      //    tidak re-upload data lama ke Supabase ketika user reload / login ulang.
-      //    Ini adalah root cause "kas muncul kembali setelah dihapus".
+      // 6. Bersihkan localStorage
       if (typeof window !== "undefined") {
         localStorage.removeItem(`bucici_db_v2_${tenant.id}`);
         localStorage.removeItem("bucici_pending_cash");
@@ -293,14 +306,14 @@ function Pengaturan() {
         </div>
       )}
 
-      {/* Kunci AI Pribadi */}
+      {/* Kunci AI Pribadi - Gemini (untuk fitur teks AI) */}
       <div className="neu p-5 space-y-3">
         <div className="flex items-center gap-2">
           <KeyRound size={18} className="text-primary" />
-          <h2 className="font-bold">Kunci AI Pribadi (BYOK)</h2>
+          <h2 className="font-bold">Kunci AI Pribadi (BYOK) — Gemini</h2>
         </div>
         <p className="text-xs text-muted-foreground">
-          Tempel Google Gemini API Key milik Anda. Format{" "}
+          Untuk fitur AI teks (analisis, saran, dll). Format{" "}
           <code className="font-mono">AQ...</code> atau <code className="font-mono">AIza...</code>.
           Dapatkan gratis di{" "}
           <a
@@ -333,11 +346,67 @@ function Pengaturan() {
           onClick={saveGeminiKey}
           className="rounded-xl bg-gradient-primary px-4 py-2 text-sm font-semibold text-primary-foreground flex items-center gap-2"
         >
-          <Save size={14} /> Simpan Kunci AI
+          <Save size={14} /> Simpan Kunci Gemini
         </button>
         {me?.geminiApiKey && (
           <div className="rounded-lg bg-success/10 border border-success/20 p-3 text-xs text-success">
-            ✓ Kunci pribadi aktif. Digunakan untuk semua fitur AI termasuk Generate Poster.
+            ✓ Kunci Gemini aktif. Digunakan untuk fitur AI teks.
+          </div>
+        )}
+      </div>
+
+      {/* Kunci AI Pribadi - Replicate (untuk Generate Poster) */}
+      <div className="neu p-5 space-y-3">
+        <div className="flex items-center gap-2">
+          <Image size={18} className="text-primary" />
+          <h2 className="font-bold">Kunci AI Pribadi (BYOK) — Replicate</h2>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Untuk fitur <b>Generate Poster Iklan</b> (image-to-image). Daftar & dapatkan API key gratis di{" "}
+          <a
+            href="https://replicate.com/account/api-tokens"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 text-primary-glow underline"
+          >
+            replicate.com/account/api-tokens <ExternalLink size={12} />
+          </a>
+          . Format: <code className="font-mono">r8_...</code>
+        </p>
+        <div className="rounded-lg bg-muted/40 border border-border p-3 text-xs text-muted-foreground space-y-1">
+          <p className="font-semibold text-foreground">Cara mendapatkan kunci Replicate:</p>
+          <ol className="list-decimal list-inside space-y-0.5">
+            <li>Buka <a href="https://replicate.com" target="_blank" rel="noopener noreferrer" className="underline">replicate.com</a> → Sign Up (gratis)</li>
+            <li>Buka <a href="https://replicate.com/account/billing" target="_blank" rel="noopener noreferrer" className="underline">Account → Billing</a> → tambah kredit (mulai $5)</li>
+            <li>Buka <a href="https://replicate.com/account/api-tokens" target="_blank" rel="noopener noreferrer" className="underline">Account → API Tokens</a> → Create token</li>
+            <li>Salin token (format <code className="font-mono">r8_...</code>) dan tempel di bawah</li>
+          </ol>
+        </div>
+        <div className="relative">
+          <input
+            value={replicateKey}
+            onChange={(e) => setReplicateKeyState(e.target.value)}
+            type={showReplicate ? "text" : "password"}
+            placeholder="r8_xxxxxxxxxxxxxxxxxxxx"
+            className="w-full rounded-lg neu-inset px-3 py-2 pr-10 text-sm font-mono"
+          />
+          <button
+            type="button"
+            onClick={() => setShowReplicate((v) => !v)}
+            className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground p-1"
+          >
+            {showReplicate ? <EyeOff size={16} /> : <Eye size={16} />}
+          </button>
+        </div>
+        <button
+          onClick={saveReplicateKey}
+          className="rounded-xl bg-gradient-primary px-4 py-2 text-sm font-semibold text-primary-foreground flex items-center gap-2"
+        >
+          <Save size={14} /> Simpan Kunci Replicate
+        </button>
+        {getReplicateKey() && (
+          <div className="rounded-lg bg-success/10 border border-success/20 p-3 text-xs text-success">
+            ✓ Kunci Replicate aktif. Generate poster iklan siap digunakan.
           </div>
         )}
       </div>

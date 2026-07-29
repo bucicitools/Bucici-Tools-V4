@@ -2,7 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
 import { Upload, Download, Loader2, Sparkles, ImageIcon, AlertCircle } from "lucide-react";
 import { toast } from "sonner";
-import { getGeminiKey, generatePosterImage } from "@/lib/gemini";
+import { getReplicateKey, generatePosterImage } from "@/lib/replicate";
 
 export const Route = createFileRoute("/app/pemasaran")({ component: Pemasaran });
 
@@ -119,7 +119,7 @@ function Pemasaran() {
   const [stepIdx, setStepIdx] = useState(0);
   const [result, setResult] = useState<string | null>(null);
 
-  const hasKey = !!getGeminiKey();
+  const hasKey = !!getReplicateKey();
   const styleDef = STYLES.find((s) => s.k === styleKey)!;
   const productLabel = PRODUCT_TYPES.find((p) => p.k === productType)!.label;
 
@@ -161,19 +161,19 @@ function Pemasaran() {
       return;
     }
     if (!hasKey) {
-      toast.error("Masukkan Gemini API Key di Pengaturan → Kunci AI Pribadi.");
+      toast.error("Masukkan Replicate API Key di Pengaturan → Kunci AI Pribadi.");
       return;
     }
     setLoading(true);
     setResult(null);
     setStepIdx(0);
 
-    // Cycle through loading steps every 2.5s
+    // Cycle through loading steps every 3s
     let idx = 0;
     const iv = setInterval(() => {
       idx = Math.min(idx + 1, LOADING_STEPS.length - 1);
       setStepIdx(idx);
-    }, 2500);
+    }, 3000);
 
     try {
       const dataUrl = await generatePosterImage({
@@ -214,7 +214,7 @@ function Pemasaran() {
           <Sparkles className="text-purple-400" /> Studio Poster AI
         </h1>
         <p className="text-xs sm:text-sm text-slate-400">
-          Generate poster iklan dari foto produk · Powered by Gemini Image Generation
+          Generate poster iklan dari foto produk · Powered by Replicate AI (FLUX Kontext Pro)
         </p>
       </div>
 
@@ -223,7 +223,7 @@ function Pemasaran() {
         <div className="mb-4 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 flex gap-2 text-sm text-amber-300">
           <AlertCircle size={18} className="shrink-0 mt-0.5" />
           <span>
-            Belum ada Gemini API Key.{" "}
+            Belum ada Replicate API Key.{" "}
             <a href="/app/pengaturan" className="underline font-semibold">
               Buka Pengaturan → Kunci AI Pribadi
             </a>{" "}
@@ -320,7 +320,7 @@ function Pemasaran() {
                 <Sparkles className="absolute inset-0 m-auto text-purple-300" size={24} />
               </div>
               <div className="text-sm font-semibold text-fuchsia-200">{LOADING_STEPS[stepIdx]}</div>
-              <div className="text-xs text-slate-400">Mohon tunggu sekitar 15–30 detik</div>
+              <div className="text-xs text-slate-400">Mohon tunggu sekitar 20–60 detik</div>
               <div className="flex gap-1">
                 {LOADING_STEPS.map((_, i) => (
                   <div
