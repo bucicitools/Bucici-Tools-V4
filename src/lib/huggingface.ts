@@ -47,16 +47,6 @@ function buildPosterPrompt(opts: PosterOptions): string {
     .join(" ");
 }
 
-/** Convert base64 data URL to raw binary Uint8Array */
-function dataUrlToBytes(dataUrl: string): Uint8Array {
-  const match = dataUrl.match(/^data:[^;]+;base64,(.+)$/);
-  if (!match) throw new Error("Format gambar tidak valid.");
-  const binary = atob(match[1]);
-  const arr = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) arr[i] = binary.charCodeAt(i);
-  return arr;
-}
-
 /**
  * Generate poster iklan menggunakan HF Inference API.
  * Model: timbrooks/instruct-pix2pix — image-to-image, gratis dengan token HF standar.
@@ -70,9 +60,6 @@ export async function generatePosterImage(opts: PosterOptions): Promise<string> 
   }
 
   const prompt = buildPosterPrompt(opts);
-  const imageBytes = dataUrlToBytes(opts.imageDataUrl);
-
-  // instruct-pix2pix accepts JSON with base64 inputs
   const base64Image = opts.imageDataUrl.replace(/^data:[^;]+;base64,/, "");
 
   const response = await fetch(
@@ -96,9 +83,9 @@ export async function generatePosterImage(opts: PosterOptions): Promise<string> 
     },
   );
 
-  // Jika masih loading (503), tunggu dan retry sekali
+  // Jika model masih loading (503), tunggu dan retry
   if (response.status === 503) {
-    await new Promise((r) => setTimeout(r, 20000));
+    await new Promise<void>((r) => setTimeout(r, 20000));
     return generatePosterImage(opts);
   }
 
@@ -120,13 +107,10 @@ export async function generatePosterImage(opts: PosterOptions): Promise<string> 
 
   // Response is binary image
   const blob = await response.blob();
-  return new Promise((resolve, reject) => {
+  return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(reader.result as string);
     reader.onerror = () => reject(new Error("Gagal membaca hasil gambar dari Hugging Face."));
     reader.readAsDataURL(blob);
   });
 }
-
-// Keep dataUrlToBytes used — suppress unused warning
-void (imageBytes: unknown) => imageBytes;
