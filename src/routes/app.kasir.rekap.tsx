@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Download } from "lucide-react";
 import { currentTenant, formatIDR, useDB } from "@/lib/store";
 import { downloadCSV } from "./admin.tenants";
@@ -22,7 +22,28 @@ function Rekapan() {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
 
-  const todayStr = localDateStr();
+  // todayStr as state so it updates at midnight automatically
+  const [todayStr, setTodayStr] = useState<string>(() => localDateStr());
+
+  // Refresh todayStr at midnight so "hari ini" filter always uses the correct date
+  useEffect(() => {
+    const scheduleRefresh = () => {
+      const now = new Date();
+      const msToMidnight =
+        (24 * 3600 -
+          now.getHours() * 3600 -
+          now.getMinutes() * 60 -
+          now.getSeconds()) *
+          1000 -
+        now.getMilliseconds() +
+        200;
+      return setTimeout(() => {
+        setTodayStr(localDateStr());
+      }, msToMidnight);
+    };
+    const timer = scheduleRefresh();
+    return () => clearTimeout(timer);
+  }, [todayStr]);
 
   // Filter transaksi berdasarkan periode — gunakan local timezone
   const filtered = useMemo(() => {
@@ -150,6 +171,9 @@ function Rekapan() {
 
       <p className="text-xs text-muted-foreground">
         Menampilkan data: <b>{periodLabel}</b> · {filtered.length} transaksi
+        {period === "today" && (
+          <span className="ml-1 opacity-60">({todayStr})</span>
+        )}
       </p>
 
       <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
