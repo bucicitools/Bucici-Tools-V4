@@ -20,14 +20,12 @@ export const HF_KEY_STORAGE = "bucici_hf_key";
 export function getHFKey(): string | undefined { return undefined; }
 export function setHFKey(_key: string) { /* no-op */ }
 
-/** Analisis warna dominan dari gambar menggunakan canvas sampling */
 function getDominantColor(dataUrl: string): Promise<string> {
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {
       const canvas = document.createElement("canvas");
-      canvas.width = 50;
-      canvas.height = 50;
+      canvas.width = 50; canvas.height = 50;
       const ctx = canvas.getContext("2d");
       if (!ctx) { resolve("vibrant colors"); return; }
       ctx.drawImage(img, 0, 0, 50, 50);
@@ -51,17 +49,19 @@ function getDominantColor(dataUrl: string): Promise<string> {
 }
 
 function buildPrompt(opts: PosterOptions, dominantColor: string): string {
+  // Nama produk spesifik dari input user sebagai subjek visual UTAMA
+  const productName = opts.title.trim() || opts.productLabel;
+
   return [
-    `A professional commercial advertising poster for a ${opts.productLabel} business.`,
-    `Visual style: ${opts.styleDescription}.`,
-    `The product features ${dominantColor}.`,
-    `Product is the hero element, beautifully lit, centered, styled for commercial use.`,
-    opts.title    ? `Large bold headline: "${opts.title}".`              : "",
-    opts.tagline  ? `Tagline text: "${opts.tagline}".`                   : "",
-    opts.cta      ? `Call-to-action: "${opts.cta}".`                     : "",
-    opts.contact  ? `Contact info at bottom: "${opts.contact}".`        : "",
-    opts.customPrompt ? `Extra: ${opts.customPrompt}.`                   : "",
-    "Ultra high quality, sharp typography, premium commercial look, social media ready, 4K.",
+    `A professional commercial advertising poster featuring "${productName}" as the main hero product.`,
+    `The product "${productName}" is realistically depicted and beautifully presented, exactly matching what "${productName}" actually looks like in real life.`,
+    `Design style: ${opts.styleDescription}.`,
+    `Color palette inspired by: ${dominantColor}.`,
+    opts.tagline  ? `Tagline text: "${opts.tagline}".`       : "",
+    opts.cta      ? `Call-to-action: "${opts.cta}".`         : "",
+    opts.contact  ? `Contact info at bottom: "${opts.contact}".` : "",
+    opts.customPrompt ? `Extra: ${opts.customPrompt}.`       : "",
+    "Photorealistic product, ultra high quality, sharp professional typography, premium commercial look, social media ready.",
   ].filter(Boolean).join(" ");
 }
 
@@ -75,10 +75,6 @@ function getRatio(ratio: string): { w: number; h: number } {
   return map[ratio] ?? { w: 1024, h: 1024 };
 }
 
-/**
- * Generate poster iklan menggunakan Pollinations.ai (gratis, tanpa API key, CORS aman).
- * Foto produk dianalisis warna dominannya untuk memperkaya prompt.
- */
 export async function generatePosterImage(opts: PosterOptions): Promise<string> {
   const dominantColor = opts.imageDataUrl
     ? await getDominantColor(opts.imageDataUrl)
