@@ -10,8 +10,8 @@ import { currentUser } from "@/lib/store";
 
 const BASE = "https://generativelanguage.googleapis.com/v1beta/models";
 const TEXT_MODEL = "gemini-2.0-flash";
-// Model yang terbukti berhasil generate poster dari foto produk langsung
-const IMAGE_MODEL = "gemini-2.0-flash-preview-image-generation";
+// Model image generation terbaru (pengganti gemini-2.0-flash-preview-image-generation yang sudah deprecated Nov 2025)
+const IMAGE_MODEL = "gemini-2.0-flash-exp-image-generation";
 const LS_KEY = "bucici_gemini_key";
 
 // ─── Key management ───────────────────────────────────────────────────────────
@@ -107,7 +107,7 @@ export interface PosterOptions {
 /**
  * Generate advertising poster via Gemini image generation model directly.
  * Foto produk asli dikirim ke Gemini → Gemini transform jadi poster profesional.
- * Model: gemini-2.0-flash-preview-image-generation
+ * Model: gemini-2.0-flash-exp-image-generation (current, replaces deprecated preview model)
  * Retries once on 429 after 65 seconds.
  */
 export async function generatePosterImage(opts: PosterOptions): Promise<string> {
@@ -163,6 +163,16 @@ export async function generatePosterImage(opts: PosterOptions): Promise<string> 
     res = await fetch(url, init);
   }
 
+  // If exp model also fails with 404, try gemini-2.5-flash-image as final fallback
+  if (res.status === 404) {
+    const fallbackModel = "gemini-2.5-flash-image";
+    const { url: url2, headers: headers2 } = buildRequest(
+      `${BASE}/${fallbackModel}:generateContent`,
+      key,
+    );
+    res = await fetch(url2, { method: "POST", headers: headers2, body: JSON.stringify(body) });
+  }
+
   if (!res.ok) {
     const errText = await res.text();
     const status = res.status;
@@ -177,6 +187,10 @@ export async function generatePosterImage(opts: PosterOptions): Promise<string> 
     if (status === 429)
       throw new Error(
         "Rate limit Gemini masih aktif. Tunggu beberapa menit lalu coba lagi, atau coba besok jika kuota harian habis.",
+      );
+    if (status === 404)
+      throw new Error(
+        "Model image generation tidak tersedia untuk key ini. Coba buat API key baru di aistudio.google.com/apikey.",
       );
     throw new Error(`Gemini error (${status}): ${errText.slice(0, 300)}`);
   }
