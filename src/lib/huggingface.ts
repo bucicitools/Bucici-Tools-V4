@@ -1,22 +1,6 @@
-// Hugging Face Inference API — direct browser call, text-to-image.
-// Model: black-forest-labs/FLUX.1-schnell (gratis, HF mendukung CORS untuk model ini).
-// Token disimpan di localStorage.
-
-export const HF_KEY_STORAGE = "bucici_hf_key";
-
-export function getHFKey(): string | undefined {
-  if (typeof window === "undefined") return undefined;
-  return localStorage.getItem(HF_KEY_STORAGE) || undefined;
-}
-
-export function setHFKey(key: string) {
-  if (typeof window === "undefined") return;
-  if (key.trim()) {
-    localStorage.setItem(HF_KEY_STORAGE, key.trim());
-  } else {
-    localStorage.removeItem(HF_KEY_STORAGE);
-  }
-}
+// Poster generation menggunakan Pollinations.ai
+// Gratis, tanpa API key, CORS supported, pakai model FLUX.
+// https://pollinations.ai
 
 export interface PosterOptions {
   imageDataUrl: string;
@@ -31,6 +15,11 @@ export interface PosterOptions {
   customPrompt?: string;
 }
 
+// Tetap export agar pengaturan tidak error
+export const HF_KEY_STORAGE = "bucici_hf_key";
+export function getHFKey(): string | undefined { return undefined; }
+export function setHFKey(_key: string) { /* no-op */ }
+
 /** Analisis warna dominan dari gambar menggunakan canvas sampling */
 function getDominantColor(dataUrl: string): Promise<string> {
   return new Promise((resolve) => {
@@ -42,23 +31,19 @@ function getDominantColor(dataUrl: string): Promise<string> {
       const ctx = canvas.getContext("2d");
       if (!ctx) { resolve("vibrant colors"); return; }
       ctx.drawImage(img, 0, 0, 50, 50);
-      const data = ctx.getImageData(0, 0, 50, 50).data;
-      let r = 0, g = 0, b = 0, count = 0;
-      for (let i = 0; i < data.length; i += 16) {
-        r += data[i]; g += data[i + 1]; b += data[i + 2]; count++;
-      }
-      r = Math.round(r / count);
-      g = Math.round(g / count);
-      b = Math.round(b / count);
-      const max = Math.max(r, g, b);
-      let colorDesc = "vibrant mixed colors";
-      if (max === r && r > 150) colorDesc = "warm red and orange tones";
-      else if (max === g && g > 150) colorDesc = "fresh green tones";
-      else if (max === b && b > 150) colorDesc = "cool blue tones";
-      else if (r > 200 && g > 200 && b > 200) colorDesc = "bright white and light tones";
-      else if (r < 80 && g < 80 && b < 80) colorDesc = "deep dark dramatic tones";
-      else if (r > 150 && g > 120 && b < 100) colorDesc = "warm golden-brown tones";
-      resolve(colorDesc);
+      const d = ctx.getImageData(0, 0, 50, 50).data;
+      let r = 0, g = 0, b = 0, n = 0;
+      for (let i = 0; i < d.length; i += 16) { r += d[i]; g += d[i+1]; b += d[i+2]; n++; }
+      r = Math.round(r/n); g = Math.round(g/n); b = Math.round(b/n);
+      const mx = Math.max(r, g, b);
+      let c = "vibrant mixed colors";
+      if (mx === r && r > 150) c = "warm red and orange tones";
+      else if (mx === g && g > 150) c = "fresh green tones";
+      else if (mx === b && b > 150) c = "cool blue tones";
+      else if (r > 200 && g > 200 && b > 200) c = "bright white and light tones";
+      else if (r < 80 && g < 80 && b < 80) c = "deep dark dramatic tones";
+      else if (r > 150 && g > 120 && b < 100) c = "warm golden-brown tones";
+      resolve(c);
     };
     img.onerror = () => resolve("vibrant colors");
     img.src = dataUrl;
@@ -69,82 +54,55 @@ function buildPrompt(opts: PosterOptions, dominantColor: string): string {
   return [
     `A professional commercial advertising poster for a ${opts.productLabel} business.`,
     `Visual style: ${opts.styleDescription}.`,
-    `The featured product has ${dominantColor}.`,
-    `The product is the hero element, beautifully lit, centered, and styled for commercial use.`,
-    opts.title ? `Large bold headline text reads: "${opts.title}".` : "",
-    opts.tagline ? `Supporting tagline: "${opts.tagline}".` : "",
-    opts.cta ? `Call-to-action element: "${opts.cta}".` : "",
-    opts.contact ? `Contact info at the bottom: "${opts.contact}".` : "",
-    opts.customPrompt ? `Additional details: ${opts.customPrompt}.` : "",
-    "Ultra high quality, sharp professional typography, premium commercial graphic design, social media ready, 4K resolution.",
-  ]
-    .filter(Boolean)
-    .join(" ");
+    `The product features ${dominantColor}.`,
+    `Product is the hero element, beautifully lit, centered, styled for commercial use.`,
+    opts.title    ? `Large bold headline: "${opts.title}".`              : "",
+    opts.tagline  ? `Tagline text: "${opts.tagline}".`                   : "",
+    opts.cta      ? `Call-to-action: "${opts.cta}".`                     : "",
+    opts.contact  ? `Contact info at bottom: "${opts.contact}".`        : "",
+    opts.customPrompt ? `Extra: ${opts.customPrompt}.`                   : "",
+    "Ultra high quality, sharp typography, premium commercial look, social media ready, 4K.",
+  ].filter(Boolean).join(" ");
+}
+
+function getRatio(ratio: string): { w: number; h: number } {
+  const map: Record<string, { w: number; h: number }> = {
+    "1:1":  { w: 1024, h: 1024 },
+    "4:5":  { w: 896,  h: 1120 },
+    "9:16": { w: 576,  h: 1024 },
+    "16:9": { w: 1024, h: 576  },
+  };
+  return map[ratio] ?? { w: 1024, h: 1024 };
 }
 
 /**
- * Generate poster iklan langsung dari browser ke HF API.
- * HF mendukung CORS untuk FLUX.1-schnell dengan request JSON sederhana.
+ * Generate poster iklan menggunakan Pollinations.ai (gratis, tanpa API key, CORS aman).
+ * Foto produk dianalisis warna dominannya untuk memperkaya prompt.
  */
 export async function generatePosterImage(opts: PosterOptions): Promise<string> {
-  const key = getHFKey();
-  if (!key) {
-    throw new Error(
-      "Token Hugging Face belum diatur. Buka Pengaturan \u2192 Kunci AI Pribadi.",
-    );
-  }
-
   const dominantColor = opts.imageDataUrl
     ? await getDominantColor(opts.imageDataUrl)
     : "vibrant colors";
 
   const prompt = buildPrompt(opts, dominantColor);
+  const { w, h } = getRatio(opts.ratio);
+  const seed = Math.floor(Math.random() * 999999);
 
-  const doRequest = async (retried = false): Promise<string> => {
-    const response = await fetch(
-      "https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${key}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          inputs: prompt,
-          parameters: { num_inference_steps: 4 },
-        }),
-      },
-    );
+  const url =
+    `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}` +
+    `?width=${w}&height=${h}&seed=${seed}&nologo=true&enhance=true&model=flux`;
 
-    // Model masih loading — tunggu dan retry sekali
-    if (response.status === 503 && !retried) {
-      await new Promise<void>((r) => setTimeout(r, 20000));
-      return doRequest(true);
-    }
+  const response = await fetch(url);
 
-    if (!response.ok) {
-      const errText = await response.text();
-      const status = response.status;
-      if (status === 401)
-        throw new Error("Token Hugging Face tidak valid. Cek kembali token di huggingface.co/settings/tokens.");
-      if (status === 403)
-        throw new Error("Token tidak punya akses. Buat token baru bertipe Read di huggingface.co/settings/tokens.");
-      if (status === 429)
-        throw new Error("Terlalu banyak permintaan. Tunggu sebentar lalu coba lagi.");
-      if (status === 503)
-        throw new Error("Model sedang sangat sibuk. Tunggu 30 detik lalu coba lagi.");
-      throw new Error(`Hugging Face error (${status}): ${errText.slice(0, 200)}`);
-    }
+  if (!response.ok) {
+    throw new Error(`Pollinations error (${response.status}). Coba lagi.`);
+  }
 
-    // Response adalah binary image
-    const blob = await response.blob();
-    return new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result as string);
-      reader.onerror = () => reject(new Error("Gagal membaca hasil gambar."));
-      reader.readAsDataURL(blob);
-    });
-  };
-
-  return doRequest();
+  const blob = await response.blob();
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload  = () => resolve(reader.result as string);
+    reader.onerror = () => reject(new Error("Gagal membaca gambar."));
+    reader.readAsDataURL(blob);
+  });
 }

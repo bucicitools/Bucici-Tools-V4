@@ -1,70 +1,69 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
-import { Upload, Download, Loader2, Sparkles, ImageIcon, AlertCircle } from "lucide-react";
+import { Upload, Download, Loader2, Sparkles, ImageIcon } from "lucide-react";
 import { toast } from "sonner";
-import { getHFKey, generatePosterImage } from "@/lib/huggingface";
+import { generatePosterImage } from "@/lib/huggingface";
 
 export const Route = createFileRoute("/app/pemasaran")({ component: Pemasaran });
 
 const PRODUCT_TYPES = [
-  { k: "fnb", label: "Makanan & Minuman" },
-  { k: "fashion", label: "Fashion & Pakaian" },
-  { k: "otomotif", label: "Otomotif & Sparepart" },
+  { k: "fnb",        label: "Makanan & Minuman" },
+  { k: "fashion",    label: "Fashion & Pakaian" },
+  { k: "otomotif",   label: "Otomotif & Sparepart" },
   { k: "elektronik", label: "Elektronik & Gadget" },
-  { k: "jasa", label: "Jasa & Layanan" },
-  { k: "beauty", label: "Kecantikan & Kesehatan" },
-  { k: "lainnya", label: "Bisnis Lainnya" },
+  { k: "jasa",       label: "Jasa & Layanan" },
+  { k: "beauty",     label: "Kecantikan & Kesehatan" },
+  { k: "lainnya",    label: "Bisnis Lainnya" },
 ];
 
 const STYLES = [
-  { k: "fresh", label: "Fresh Style", desc: "fresh clean minimal aesthetic, soft daylight, bright whites and mint accents" },
-  { k: "bold", label: "Bold Style", desc: "bold high-contrast commercial style, saturated primary colors, thick sans-serif typography" },
-  { k: "hot", label: "Hot Style", desc: "hot red and orange gradient, flame accents, appetizing steam, high energy" },
-  { k: "traditional", label: "Traditional Style", desc: "traditional Indonesian heritage, batik ornament, warm brown and gold, rustic wood" },
-  { k: "playful", label: "Playful Style", desc: "playful pop style, pastel confetti, bubbles, cheerful mood" },
-  { k: "natural", label: "Natural Photography", desc: "natural photography style, editorial magazine look, soft studio lighting, shallow depth of field" },
-  { k: "youth", label: "Youth Fun Poster", desc: "youth-oriented gen-z poster, bold color blocks, sticker collage, halftone dots" },
-  { k: "street", label: "Street Fun Poster", desc: "urban street style, graffiti spray, neon signage, city night vibe" },
-  { k: "rustic", label: "Rustic Style", desc: "rustic artisan style, kraft paper background, hand-lettered typography, warm earth tones" },
-  { k: "emoji", label: "Emoji Style", desc: "cheerful emoji-based composition, chat-bubble callouts, bright yellow accents" },
-  { k: "splash", label: "Splash Style", desc: "dynamic splash of liquid or paint, motion-frozen droplets, dramatic lighting" },
-  { k: "ramadhan", label: "Ramadhan Style", desc: "ramadhan festive theme, lantern, crescent moon, deep green and gold, arabesque ornaments" },
-  { k: "lebaran", label: "Lebaran Style", desc: "lebaran festive theme, ketupat, mosque silhouette, warm gold and emerald, celebration mood" },
-  { k: "holiday", label: "Holiday Style", desc: "holiday celebration theme, festive garland, glowing lights, gift accents" },
+  { k: "fresh",      label: "Fresh Style",          desc: "fresh clean minimal aesthetic, soft daylight, bright whites and mint accents" },
+  { k: "bold",       label: "Bold Style",            desc: "bold high-contrast commercial style, saturated primary colors, thick sans-serif typography" },
+  { k: "hot",        label: "Hot Style",             desc: "hot red and orange gradient, flame accents, appetizing steam, high energy" },
+  { k: "traditional",label: "Traditional Style",     desc: "traditional Indonesian heritage, batik ornament, warm brown and gold, rustic wood" },
+  { k: "playful",    label: "Playful Style",         desc: "playful pop style, pastel confetti, bubbles, cheerful mood" },
+  { k: "natural",    label: "Natural Photography",   desc: "natural photography editorial, soft studio lighting, shallow depth of field" },
+  { k: "youth",      label: "Youth Fun Poster",      desc: "youth gen-z poster, bold color blocks, sticker collage, halftone dots" },
+  { k: "street",     label: "Street Fun Poster",     desc: "urban street style, graffiti spray, neon signage, city night vibe" },
+  { k: "rustic",     label: "Rustic Style",          desc: "rustic artisan, kraft paper background, hand-lettered typography, warm earth tones" },
+  { k: "emoji",      label: "Emoji Style",           desc: "cheerful emoji-based composition, chat-bubble callouts, bright yellow accents" },
+  { k: "splash",     label: "Splash Style",          desc: "dynamic splash of liquid or paint, motion-frozen droplets, dramatic lighting" },
+  { k: "ramadhan",   label: "Ramadhan Style",        desc: "ramadhan festive theme, lantern, crescent moon, deep green and gold, arabesque ornaments" },
+  { k: "lebaran",    label: "Lebaran Style",         desc: "lebaran festive, ketupat, mosque silhouette, warm gold and emerald" },
+  { k: "holiday",    label: "Holiday Style",         desc: "holiday celebration, festive garland, glowing lights, gift accents" },
 ];
 
 const RATIOS = [
-  { k: "1:1", label: "Square 1:1 (IG/Marketplace)" },
-  { k: "4:5", label: "Portrait 4:5 (IG Feed)" },
+  { k: "1:1",  label: "Square 1:1 (IG/Marketplace)" },
+  { k: "4:5",  label: "Portrait 4:5 (IG Feed)" },
   { k: "9:16", label: "Story/Reels 9:16" },
   { k: "16:9", label: "Landscape 16:9" },
 ];
 
 const LOADING_STEPS = [
   "Menganalisis foto produk...",
-  "Mengidentifikasi komposisi...",
+  "Membangun komposisi poster...",
   "Menerapkan gaya desain...",
   "Menyusun tipografi & teks...",
   "Merender hasil final...",
 ];
 
 function Pemasaran() {
-  const [img, setImg] = useState<string | null>(null);
-  const [imgName, setImgName] = useState("");
+  const [img, setImg]           = useState<string | null>(null);
+  const [imgName, setImgName]   = useState("");
   const [productType, setProductType] = useState(PRODUCT_TYPES[0].k);
   const [styleKey, setStyleKey] = useState(STYLES[0].k);
-  const [title, setTitle] = useState("");
-  const [tagline, setTagline] = useState("");
-  const [cta, setCta] = useState("Pesan Sekarang!");
-  const [extra, setExtra] = useState("");
+  const [title, setTitle]       = useState("");
+  const [tagline, setTagline]   = useState("");
+  const [cta, setCta]           = useState("Pesan Sekarang!");
+  const [extra, setExtra]       = useState("");
   const [customPrompt, setCustomPrompt] = useState("");
-  const [ratio, setRatio] = useState(RATIOS[0].k);
-  const [loading, setLoading] = useState(false);
-  const [stepIdx, setStepIdx] = useState(0);
-  const [result, setResult] = useState<string | null>(null);
+  const [ratio, setRatio]       = useState(RATIOS[0].k);
+  const [loading, setLoading]   = useState(false);
+  const [stepIdx, setStepIdx]   = useState(0);
+  const [result, setResult]     = useState<string | null>(null);
 
-  const hasKey = !!getHFKey();
-  const styleDef = STYLES.find((s) => s.k === styleKey)!;
+  const styleDef    = STYLES.find((s) => s.k === styleKey)!;
   const productLabel = PRODUCT_TYPES.find((p) => p.k === productType)!.label;
 
   function upload(e: React.ChangeEvent<HTMLInputElement>) {
@@ -83,8 +82,7 @@ function Pemasaran() {
           else { width = Math.round((width * MAX) / height); height = MAX; }
         }
         const canvas = document.createElement("canvas");
-        canvas.width = width;
-        canvas.height = height;
+        canvas.width = width; canvas.height = height;
         canvas.getContext("2d")!.drawImage(image, 0, 0, width, height);
         setImg(canvas.toDataURL("image/jpeg", 0.85));
       };
@@ -95,12 +93,9 @@ function Pemasaran() {
 
   async function generate() {
     if (!img) { toast.error("Upload foto produk terlebih dahulu."); return; }
-    if (!hasKey) { toast.error("Masukkan HF Token di Pengaturan → Kunci AI Pribadi."); return; }
-    setLoading(true);
-    setResult(null);
-    setStepIdx(0);
+    setLoading(true); setResult(null); setStepIdx(0);
     let idx = 0;
-    const iv = setInterval(() => { idx = Math.min(idx + 1, LOADING_STEPS.length - 1); setStepIdx(idx); }, 3000);
+    const iv = setInterval(() => { idx = Math.min(idx + 1, LOADING_STEPS.length - 1); setStepIdx(idx); }, 4000);
     try {
       const dataUrl = await generatePosterImage({
         imageDataUrl: img, title, tagline, cta, contact: extra,
@@ -112,9 +107,7 @@ function Pemasaran() {
     } catch (e) {
       toast.error((e as Error).message);
     } finally {
-      clearInterval(iv);
-      setLoading(false);
-      setStepIdx(0);
+      clearInterval(iv); setLoading(false); setStepIdx(0);
     }
   }
 
@@ -133,22 +126,12 @@ function Pemasaran() {
           <Sparkles className="text-purple-400" /> Studio Poster AI
         </h1>
         <p className="text-xs sm:text-sm text-slate-400">
-          Generate poster iklan dari foto produk · Powered by Hugging Face AI (FLUX.1-Kontext)
+          Generate poster iklan dari foto produk · Powered by Pollinations AI (FLUX) · Gratis tanpa setup
         </p>
       </div>
 
-      {!hasKey && (
-        <div className="mb-4 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 flex gap-2 text-sm text-amber-300">
-          <AlertCircle size={18} className="shrink-0 mt-0.5" />
-          <span>
-            Belum ada HF Token.{" "}
-            <a href="/app/pengaturan" className="underline font-semibold">Buka Pengaturan → Kunci AI Pribadi</a>{" "}
-            untuk mengaktifkan generate poster. Token gratis dari huggingface.co
-          </span>
-        </div>
-      )}
-
       <div className="grid grid-cols-1 lg:grid-cols-[360px_1fr] gap-4">
+        {/* Panel kiri */}
         <div className="space-y-3">
           <div className="rounded-2xl bg-white/5 border border-white/10 p-4 space-y-2">
             <p className="text-xs font-semibold text-slate-300 uppercase tracking-wide">Foto Produk</p>
@@ -194,7 +177,7 @@ function Pemasaran() {
 
           <button
             onClick={generate}
-            disabled={loading || !img || !hasKey}
+            disabled={loading || !img}
             className="w-full rounded-xl bg-gradient-to-r from-fuchsia-600 via-purple-600 to-indigo-600 py-3 font-bold flex items-center justify-center gap-2 disabled:opacity-40 transition"
           >
             {loading ? <Loader2 className="animate-spin" size={16} /> : <Sparkles size={16} />}
@@ -202,6 +185,7 @@ function Pemasaran() {
           </button>
         </div>
 
+        {/* Panel kanan */}
         <div className="rounded-2xl bg-white/5 border border-white/10 p-4 min-h-[420px] flex items-center justify-center">
           {loading ? (
             <div className="flex flex-col items-center gap-4 text-center px-4">
@@ -210,7 +194,7 @@ function Pemasaran() {
                 <Sparkles className="absolute inset-0 m-auto text-purple-300" size={24} />
               </div>
               <div className="text-sm font-semibold text-fuchsia-200">{LOADING_STEPS[stepIdx]}</div>
-              <div className="text-xs text-slate-400">Mohon tunggu sekitar 20–60 detik</div>
+              <div className="text-xs text-slate-400">Mohon tunggu sekitar 15–40 detik</div>
               <div className="flex gap-1">
                 {LOADING_STEPS.map((_, i) => (
                   <div key={i} className={`h-1 w-6 rounded-full transition-all ${i <= stepIdx ? "bg-purple-400" : "bg-white/10"}`} />
@@ -218,7 +202,7 @@ function Pemasaran() {
               </div>
             </div>
           ) : result ? (
-            <div className="relative group w-full">
+            <div className="relative w-full">
               <img src={result} alt="Poster iklan" className="w-full rounded-xl object-contain max-h-[75vh] border border-white/10" />
               <div className="absolute bottom-3 right-3 flex gap-2">
                 <button onClick={downloadResult} className="rounded-lg bg-black/70 backdrop-blur px-3 py-2 text-xs flex items-center gap-1 hover:bg-black/90 transition">
@@ -239,7 +223,7 @@ function Pemasaran() {
         </div>
       </div>
 
-      <style>{`.inp { width: 100%; background: rgba(255,255,255,0.08); border-radius: 8px; padding: 8px 10px; font-size: 13px; color: white; outline: none; border: 1px solid rgba(255,255,255,0.12); } .inp::placeholder { color: rgba(255,255,255,0.3); } .inp:focus { border-color: rgba(168,85,247,0.6); background: rgba(255,255,255,0.12); }`}</style>
+      <style>{`.inp{width:100%;background:rgba(255,255,255,.08);border-radius:8px;padding:8px 10px;font-size:13px;color:white;outline:none;border:1px solid rgba(255,255,255,.12)}.inp::placeholder{color:rgba(255,255,255,.3)}.inp:focus{border-color:rgba(168,85,247,.6);background:rgba(255,255,255,.12)}`}</style>
     </div>
   );
 }
