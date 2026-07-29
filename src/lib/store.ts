@@ -811,7 +811,7 @@ export async function hydrateFromSupabase(): Promise<void> {
 
   // Ambil data dari Supabase untuk tenant aktif — Supabase is the source of truth
   if (activeTenantId) {
-    const [prodRes, catRes, txRes, cashRes, stockRes] = await Promise.all([
+    const [prodRes, catRes, txRes, cashRes, stockRes, memberProfilesRes] = await Promise.all([
       supabase.from("products").select("*").eq("tenant_id", activeTenantId),
       supabase.from("categories").select("*").eq("tenant_id", activeTenantId),
       supabase
@@ -829,6 +829,12 @@ export async function hydrateFromSupabase(): Promise<void> {
         .select("*")
         .eq("tenant_id", activeTenantId)
         .order("created_at", { ascending: true }),
+      // Fetch all profiles belonging to this tenant.
+      // The initial profiles query above is restricted by RLS to only the logged-in
+      // user's own row (when the policy doesn't grant cross-user reads). This
+      // secondary query uses the owner's session which DOES have access to all
+      // profiles where tenant_id = activeTenantId — so members will always load.
+      supabase.from("profiles").select("*").eq("tenant_id", activeTenantId),
     ]);
 
     // Products: Supabase wins if it has data; else keep local (offline fallback)
@@ -966,7 +972,8 @@ export async function hydrateFromSupabase(): Promise<void> {
       );
     }
 
-    // Same recovery for cash
+    // Same recovery for cash — ONLY when Supabase is truly empty
+    // (do NOT recover from localStorage if Supabase returned empty due to a just-completed delete)
     if ((!cashRes.data || cashRes.data.length === 0) && local.cash && local.cash.length > 0) {
       void Promise.all(
         local.cash.map((c) =>
@@ -981,6 +988,34 @@ export async function hydrateFromSupabase(): Promise<void> {
           }),
         ),
       );
+    }
+
+    // Merge tenant member profiles fetched by tenant_id filter.
+    // This captures members whose profiles were blocked by RLS in the initial
+    // broad "profiles" query above (which only returned the logged-in user's row).
+    const tenantMemberProfiles = memberProfilesRes.data ?? [];
+    for (const p of tenantMemberProfiles) {
+      if (!users.some((u) => u.id === p.id)) {
+        const roleRow = roleRows.find((r) => r.user_id === p.id);
+        const isSA = !!roleRow && roleRow.role === "super_admin";
+        const ownsTenant2 = tenants.some((t) => t.ownerId === p.id);
+        const memberRole: Role = isSA
+          ? "super_admin"
+          : ownsTenant2
+            ? "owner"
+            : (p.role as Role) || "member";
+        users.push({
+          id: p.id,
+          name: p.full_name ?? p.name ?? "Anggota",
+          email: p.email ?? "",
+          password: "",
+          role: memberRole,
+          tenantId: p.tenant_id ?? activeTenantId,
+          roleId: p.role_id ?? undefined,
+          geminiApiKey: p.gemini_api_key ?? undefined,
+          createdAt: p.created_at ?? new Date().toISOString(),
+        });
+      }
     }
   }
 
