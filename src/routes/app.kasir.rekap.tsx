@@ -6,6 +6,14 @@ import { downloadCSV } from "./admin.tenants";
 
 export const Route = createFileRoute("/app/kasir/rekap")({ component: Rekapan });
 
+/** Returns YYYY-MM-DD in local timezone */
+function localDateStr(date: Date = new Date()) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
 function Rekapan() {
   const t = currentTenant();
   const txs = useDB((d) => (t ? d.transactions.filter((x) => x.tenantId === t.id) : []));
@@ -14,46 +22,64 @@ function Rekapan() {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
 
+  const todayStr = localDateStr();
+
+  // Filter transaksi berdasarkan periode — gunakan local timezone
   const filtered = useMemo(() => {
     const now = new Date();
     return txs.filter((x) => {
       const d = new Date(x.createdAt);
-      if (period === "today") return d.toDateString() === now.toDateString();
+      const dStr = localDateStr(d);
+      if (period === "today") return dStr === todayStr;
       if (period === "7") return now.getTime() - d.getTime() < 7 * 864e5;
       if (period === "custom") {
-        if (from && d < new Date(from)) return false;
-        if (to && d > new Date(to + "T23:59:59")) return false;
+        if (from && dStr < from) return false;
+        if (to && dStr > to) return false;
+        return true;
+      }
+      return true; // "all"
+    });
+  }, [txs, period, from, to, todayStr]);
+
+  // Filter kas berdasarkan periode juga (untuk Uang Keluar dalam periode)
+  const filteredCash = useMemo(() => {
+    const now = new Date();
+    return cash.filter((c) => {
+      const d = new Date(c.createdAt);
+      const dStr = localDateStr(d);
+      if (period === "today") return dStr === todayStr;
+      if (period === "7") return now.getTime() - d.getTime() < 7 * 864e5;
+      if (period === "custom") {
+        if (from && dStr < from) return false;
+        if (to && dStr > to) return false;
         return true;
       }
       return true;
     });
-  }, [txs, period, from, to]);
+  }, [cash, period, from, to, todayStr]);
 
   const paid = filtered.filter((x) => x.status === "paid");
   const omzet = paid.reduce((a, b) => a + b.total, 0);
-  const uangKeluar = cash.filter((c) => c.type === "out").reduce((a, b) => a + b.amount, 0);
 
-  // Saldo kas fisik: dihitung dari semua catatan kas + transaksi cash paid
-  // Logika sama persis dengan halaman Kas agar nilai konsisten
+  // Uang keluar hanya dalam periode filter
+  const uangKeluar = filteredCash
+    .filter((c) => c.type === "out")
+    .reduce((a, b) => a + b.amount, 0);
+
+  // Saldo kas fisik (all-time laci) — selalu all-time karena ini saldo akumulatif
   const saldoKas = useMemo(() => {
-    let s = 0;
     const sorted = [...cash].sort(
       (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
     );
+    let s = 0;
     for (const c of sorted) {
       if (c.type === "fill") {
         if (c.reset) s = c.amount;
         else s += c.amount;
-      } else if (c.type === "in") {
-        s += c.amount;
-      } else {
-        s -= c.amount;
-      }
+      } else if (c.type === "in") s += c.amount;
+      else s -= c.amount;
     }
-    // Tambah semua transaksi cash paid (all-time, bukan hanya periode filter)
-    // karena saldo laci adalah akumulasi sepanjang waktu
-    const cashTxs = txs.filter((x) => x.status === "paid" && x.method === "cash");
-    s += cashTxs.reduce((a, b) => a + b.total, 0);
+    s += txs.filter((x) => x.status === "paid" && x.method === "cash").reduce((a, b) => a + b.total, 0);
     return s;
   }, [cash, txs]);
 
@@ -68,6 +94,9 @@ function Rekapan() {
     return acc;
   }, {});
   const voidCount = filtered.filter((x) => x.status === "void").length;
+
+  const periodLabel =
+    period === "today" ? "Hari ini" : period === "7" ? "7 Hari Terakhir" : period === "all" ? "Semua Data" : `${from} s/d ${to}`;
 
   return (
     <div className="space-y-4">
@@ -102,7 +131,7 @@ function Rekapan() {
         <button
           onClick={() =>
             downloadCSV(
-              "rekap.csv",
+              `rekap-${period}.csv`,
               filtered.map((x) => ({
                 id: x.id,
                 tanggal: x.createdAt,
@@ -119,12 +148,16 @@ function Rekapan() {
         </button>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <p className="text-xs text-muted-foreground">
+        Menampilkan data: <b>{periodLabel}</b> · {filtered.length} transaksi
+      </p>
+
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
         <Card label="Omzet" value={formatIDR(omzet)} tone="text-primary" />
-        <Card label="Uang Keluar (Kas)" value={formatIDR(uangKeluar)} tone="text-destructive" />
-        {/* Saldo Kas = saldo fisik di laci, sama seperti halaman Kas */}
-        <Card label="Saldo Kas (Laci)" value={formatIDR(saldoKas)} tone="text-success" />
-        <Card label="Jumlah Transaksi" value={String(filtered.length)} />
+        <Card label={`Uang Keluar (${periodLabel})`} value={formatIDR(uangKeluar)} tone="text-destructive" />
+        {/* Saldo Kas = akumulasi all-time saldo laci fisik */}
+        <Card label="Saldo Kas Laci (all-time)" value={formatIDR(saldoKas)} tone="text-success" />
+        <Card label="Transaksi" value={String(filtered.length)} />
         <Card label="Void" value={String(voidCount)} tone="text-destructive" />
       </div>
 
@@ -132,7 +165,7 @@ function Rekapan() {
         <div className="neu p-4">
           <h3 className="font-semibold mb-2">Metode Pembayaran</h3>
           {Object.entries(byMethod).length === 0 ? (
-            <p className="text-xs text-muted-foreground">Belum ada.</p>
+            <p className="text-xs text-muted-foreground">Belum ada transaksi dalam periode ini.</p>
           ) : (
             Object.entries(byMethod).map(([m, v]) => (
               <div key={m} className="flex justify-between text-sm py-1">
@@ -145,7 +178,7 @@ function Rekapan() {
         <div className="neu p-4">
           <h3 className="font-semibold mb-2">Kinerja Kasir</h3>
           {Object.entries(byCashier).length === 0 ? (
-            <p className="text-xs text-muted-foreground">Belum ada.</p>
+            <p className="text-xs text-muted-foreground">Belum ada transaksi dalam periode ini.</p>
           ) : (
             Object.entries(byCashier).map(([k, v]) => (
               <div key={k} className="flex justify-between text-sm py-1">
@@ -160,8 +193,7 @@ function Rekapan() {
       </div>
 
       <p className="text-xs text-muted-foreground italic">
-        📌 Saldo Kas Laci = akumulasi isi kas + uang masuk + cash terjual − uang keluar.
-        Nilai ini sama persis dengan yang tampil di halaman Kas.
+        📌 Omzet & Uang Keluar mengikuti filter periode. Saldo Kas Laci = akumulasi all-time (sama seperti di halaman Kas).
       </p>
     </div>
   );

@@ -56,35 +56,38 @@ export const Route = createFileRoute("/api/create-member")({
 
           const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
 
-          // 1. Check caller's profile
+          // 1. Caller's profile
           const { data: callerProfile } = await supabaseAdmin
             .from("profiles")
             .select("id, tenant_id, name, email")
             .eq("id", callerId)
             .maybeSingle();
 
-          // 2. Check caller's owned tenants (by owner_id)
-          const { data: ownedTenants } = await supabaseAdmin
-            .from("tenants")
-            .select("id, owner_id, owner_name")
-            .eq("owner_id", callerId);
-
-          // 3. Check caller's user_roles
+          // 2. Caller's user_roles
           const { data: callerRoles } = await supabaseAdmin
             .from("user_roles")
             .select("role")
             .eq("user_id", callerId);
+          const isSuperAdmin = callerRoles?.some((r) => r.role === "super_admin") ?? false;
 
-          const isSuperAdmin = callerRoles?.some((r) => r.role === "super_admin");
-          const ownedTenant = ownedTenants?.[0];
+          // ── Tenant lookup: try multiple methods, each self-heals the DB ──────────
+          let tenantId: string | null = null;
 
-          let tenantId: string | null =
-            ownedTenant?.id ||
-            callerProfile?.tenant_id ||
-            userData.user.user_metadata?.tenant_id ||
-            null;
+          // Method 1: tenants where owner_id = callerId (correct state)
+          const { data: ownedByOwnerId } = await supabaseAdmin
+            .from("tenants")
+            .select("id, owner_id")
+            .eq("owner_id", callerId)
+            .limit(1);
+          if (ownedByOwnerId?.[0]) tenantId = ownedByOwnerId[0].id;
 
-          // Fallback 1: super_admin gets first available tenant
+          // Method 2: profile.tenant_id
+          if (!tenantId) tenantId = callerProfile?.tenant_id ?? null;
+
+          // Method 3: auth user metadata
+          if (!tenantId) tenantId = userData.user.user_metadata?.tenant_id ?? null;
+
+          // Method 4: super_admin fallback — any tenant
           if (!tenantId && isSuperAdmin) {
             const { data: anyTenant } = await supabaseAdmin
               .from("tenants")
@@ -93,32 +96,40 @@ export const Route = createFileRoute("/api/create-member")({
             if (anyTenant?.[0]) tenantId = anyTenant[0].id;
           }
 
-          // Fallback 2: search all tenants for one belonging to this user
-          // (handles case where owner_id wasn't set correctly during registration)
+          // Method 5: scan ALL tenants — match by owner_name or single-tenant shortcut
           if (!tenantId) {
             const { data: allTenants } = await supabaseAdmin
               .from("tenants")
               .select("id, owner_id, owner_name")
               .order("created_at", { ascending: true })
-              .limit(10);
+              .limit(20);
 
             if (allTenants && allTenants.length > 0) {
-              // Try to match by owner_name or owner_id
+              // Try name match
+              const callerName = (callerProfile?.name ?? "").toLowerCase();
+              const callerEmail = (callerProfile?.email ?? userData.user.email ?? "").toLowerCase();
               const matched = allTenants.find(
                 (t) =>
-                  t.owner_id === callerId ||
-                  (callerProfile?.name &&
-                    t.owner_name
-                      ?.toLowerCase()
-                      .includes(callerProfile.name.toLowerCase())),
+                  (callerName && t.owner_name?.toLowerCase().includes(callerName)) ||
+                  (callerEmail &&
+                    t.owner_name?.toLowerCase().includes(callerEmail.split("@")[0])),
               );
               if (matched) {
                 tenantId = matched.id;
               } else if (allTenants.length === 1) {
-                // Only one tenant in the system — safe to assume it's theirs
+                // Only one tenant — safe shortcut
                 tenantId = allTenants[0].id;
-                // Fix the owner_id if it's wrong
-                if (allTenants[0].owner_id !== callerId) {
+              }
+
+              // Self-heal: fix owner_id on the found tenant if it's wrong
+              if (tenantId) {
+                const tenant = allTenants.find((t) => t.id === tenantId);
+                if (
+                  tenant &&
+                  (!tenant.owner_id ||
+                    tenant.owner_id === "00000000-0000-0000-0000-000000000000" ||
+                    tenant.owner_id !== callerId)
+                ) {
                   await supabaseAdmin
                     .from("tenants")
                     .update({ owner_id: callerId })
@@ -132,13 +143,13 @@ export const Route = createFileRoute("/api/create-member")({
             return Response.json(
               {
                 error:
-                  "Toko belum terkonfigurasi. Pastikan sudah login dan toko sudah aktif, lalu coba lagi.",
+                  "Toko belum ditemukan. Pastikan toko sudah dibuat menggunakan kode lisensi, lalu coba lagi. Jika masalah berlanjut, logout dan login ulang.",
               },
               { status: 403 },
             );
           }
 
-          // Ensure caller's profile has tenant_id set
+          // Self-heal: update profile.tenant_id if missing
           if (callerProfile && !callerProfile.tenant_id) {
             await supabaseAdmin
               .from("profiles")

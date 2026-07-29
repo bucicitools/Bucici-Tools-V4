@@ -97,7 +97,7 @@ function Pengaturan() {
     );
   }
 
-  async function handleResetTransactions() {
+  async function handleHapusDataKeuangan() {
     if (resetConfirmInput !== "HAPUS") {
       toast.error("Ketik kata HAPUS dengan huruf kapital untuk mengonfirmasi.");
       return;
@@ -111,51 +111,60 @@ function Pengaturan() {
     setResetError("");
 
     try {
-      // 1. Ambil semua ID transaksi milik tenant ini
-      const { data: txRows, error: fetchErr } = await supabase
+      // 1. Hapus transaction_items dulu (foreign key constraint)
+      const { data: txRows } = await supabase
         .from("transactions")
         .select("id")
         .eq("tenant_id", tenant.id);
 
-      if (fetchErr) {
-        // Jika query gagal (misal RLS / tabel tidak ada), tetap lanjut hapus local state
-        console.warn("[reset] fetch transactions error:", fetchErr);
-      } else {
-        const txIds = (txRows ?? []).map((r: { id: string }) => r.id);
-
-        // 2. Hapus transaction_items (best-effort, abaikan jika tabel tidak ada)
-        if (txIds.length > 0) {
-          const { error: errItems } = await supabase
-            .from("transaction_items")
-            .delete()
-            .in("transaction_id", txIds);
-          if (errItems) {
-            console.warn("[reset] transaction_items delete error (ignored):", errItems.message);
-            // Tidak throw — lanjut hapus transaksi utama
-          }
-        }
-
-        // 3. Hapus transaksi berdasarkan tenant_id
-        const { error: errTx } = await supabase
-          .from("transactions")
+      const txIds = (txRows ?? []).map((r: { id: string }) => r.id);
+      if (txIds.length > 0) {
+        const { error: errItems } = await supabase
+          .from("transaction_items")
           .delete()
-          .eq("tenant_id", tenant.id);
-
-        if (errTx) {
-          console.warn("[reset] transactions delete error:", errTx.message);
-          setResetError(
-            `Catatan: Gagal hapus dari database (${errTx.message}), tetapi data lokal sudah dibersihkan.`,
-          );
+          .in("transaction_id", txIds);
+        if (errItems) {
+          console.warn("[hapus] transaction_items error (ignored):", errItems.message);
         }
       }
 
-      // 4. Selalu bersihkan local state (terlepas error Supabase)
+      // 2. Hapus transaksi
+      const { error: errTx } = await supabase
+        .from("transactions")
+        .delete()
+        .eq("tenant_id", tenant.id);
+      if (errTx) {
+        console.warn("[hapus] transactions error:", errTx.message);
+        setResetError((prev) => prev + `Transaksi: ${errTx.message}. `);
+      }
+
+      // 3. Hapus catatan kas
+      const { error: errCash } = await supabase
+        .from("cash")
+        .delete()
+        .eq("tenant_id", tenant.id);
+      if (errCash) {
+        console.warn("[hapus] cash error:", errCash.message);
+        setResetError((prev) => prev + `Kas: ${errCash.message}. `);
+      }
+
+      // 4. Hapus gerakan stok
+      const { error: errStock } = await supabase
+        .from("stock_movements")
+        .delete()
+        .eq("tenant_id", tenant.id);
+      if (errStock) {
+        console.warn("[hapus] stock_movements error:", errStock.message);
+      }
+
+      // 5. Selalu bersihkan local state
       db.set((s) => {
         s.transactions = s.transactions.filter((t) => t.tenantId !== tenant.id);
-        s.stock = s.stock.filter((stk) => stk.tenantId !== tenant.id || stk.type !== "out");
+        s.cash = s.cash.filter((c) => c.tenantId !== tenant.id);
+        s.stock = s.stock.filter((stk) => stk.tenantId !== tenant.id);
       });
 
-      toast.success("Riwayat transaksi berhasil dihapus!");
+      toast.success("Data keuangan berhasil dihapus!");
       setShowResetModal(false);
       setResetConfirmInput("");
     } catch (error) {
@@ -166,7 +175,7 @@ function Pengaturan() {
             ? String((error as { message: unknown }).message)
             : "Terjadi kesalahan tidak diketahui.";
       toast.error(`Gagal: ${msg}`);
-      console.error("[reset] unexpected error:", error);
+      console.error("[hapus] unexpected error:", error);
     } finally {
       setLoadingReset(false);
     }
@@ -321,40 +330,53 @@ function Pengaturan() {
         )}
       </div>
 
-      {/* Reset Transaksi */}
+      {/* Hapus Data Keuangan */}
       {isOwner && (
         <div className="neu p-5 space-y-3 border-destructive/30">
           <div className="flex items-center gap-2 text-destructive">
             <Trash2 size={18} />
-            <h2 className="font-bold">Hapus / Reset Riwayat Transaksi</h2>
+            <h2 className="font-bold">Hapus Data Keuangan</h2>
           </div>
           <p className="text-xs text-muted-foreground">
-            Menghapus seluruh riwayat transaksi toko <b>{tenant?.businessName}</b> secara permanen.
-            Tidak dapat dibatalkan.
+            Menghapus seluruh data keuangan toko <b>{tenant?.businessName}</b> secara permanen.
+            Data yang dihapus: <b>semua transaksi, catatan kas, dan riwayat stok</b>.
+            Data yang tidak terhapus: produk, kategori, anggota, dan role tetap aman.
           </p>
           <button
             onClick={() => setShowResetModal(true)}
             className="rounded-xl bg-destructive px-4 py-2 text-sm font-semibold text-destructive-foreground flex items-center gap-2 hover:bg-destructive/90 transition-colors"
           >
-            <Trash2 size={14} /> Reset Seluruh Transaksi
+            <Trash2 size={14} /> Hapus Semua Data Keuangan
           </button>
         </div>
       )}
 
-      {/* Modal Konfirmasi Reset */}
+      {/* Modal Konfirmasi Hapus Data Keuangan */}
       {showResetModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
           <div className="neu p-6 max-w-md w-full space-y-4 bg-background border border-destructive/40 rounded-2xl shadow-2xl">
             <div className="flex items-center gap-3 text-destructive">
               <AlertTriangle size={24} />
-              <h3 className="font-bold text-lg">Konfirmasi Penghapusan</h3>
+              <h3 className="font-bold text-lg">Konfirmasi Hapus Data Keuangan</h3>
             </div>
-            <p className="text-xs text-muted-foreground leading-relaxed">
-              Tindakan ini akan <strong>menghapus SELURUH riwayat transaksi</strong> toko{" "}
-              <b>{tenant?.businessName}</b> secara permanen.
-            </p>
+
+            <div className="rounded-lg bg-destructive/8 border border-destructive/20 p-3 space-y-1 text-xs">
+              <p className="font-semibold text-destructive">Data yang akan DIHAPUS permanen:</p>
+              <ul className="list-disc list-inside text-muted-foreground space-y-0.5">
+                <li>Semua riwayat transaksi & item pesanan</li>
+                <li>Semua catatan kas (isi kas, uang masuk/keluar)</li>
+                <li>Semua riwayat gerakan stok</li>
+              </ul>
+              <p className="font-semibold text-success mt-2">Data yang TIDAK terhapus:</p>
+              <ul className="list-disc list-inside text-muted-foreground space-y-0.5">
+                <li>Produk & kategori</li>
+                <li>Anggota & role</li>
+                <li>Data toko & lisensi</li>
+              </ul>
+            </div>
+
             <p className="text-xs font-semibold">
-              Ketik kata{" "}
+              Ketik{" "}
               <span className="text-destructive font-mono font-bold">HAPUS</span> untuk melanjutkan:
             </p>
             <input
@@ -366,7 +388,7 @@ function Pengaturan() {
             />
             {resetError && (
               <div className="rounded-lg bg-warning/10 border border-warning/20 p-2 text-xs text-warning">
-                {resetError}
+                ⚠️ {resetError} Data lokal tetap dibersihkan.
               </div>
             )}
             <div className="flex gap-2 justify-end pt-2">
@@ -381,11 +403,11 @@ function Pengaturan() {
                 Batal
               </button>
               <button
-                onClick={handleResetTransactions}
+                onClick={handleHapusDataKeuangan}
                 disabled={resetConfirmInput !== "HAPUS" || loadingReset}
                 className="px-4 py-2 rounded-xl bg-destructive text-destructive-foreground text-xs font-bold disabled:opacity-40"
               >
-                {loadingReset ? "Menghapus..." : "Ya, Hapus Semua Data"}
+                {loadingReset ? "Menghapus..." : "Ya, Hapus Data Keuangan"}
               </button>
             </div>
           </div>

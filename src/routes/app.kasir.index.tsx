@@ -15,6 +15,7 @@ import {
   QrCode,
   Landmark,
   Sparkles,
+  Banknote,
 } from "lucide-react";
 
 export const Route = createFileRoute("/app/kasir/")({
@@ -29,11 +30,18 @@ function greeting() {
   return "Malam";
 }
 
+/** Returns YYYY-MM-DD in local timezone */
+function localDateStr(date: Date = new Date()) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
 function KasirDashboard() {
   const me = currentUser();
   const t = currentTenant();
 
-  // Cek apakah user adalah Owner/Admin
   const isOwner = me?.role === "owner" || me?.role === "super_admin";
 
   const products = useDB((d) => (t ? d.products.filter((p) => p.tenantId === t.id) : []));
@@ -41,16 +49,16 @@ function KasirDashboard() {
   const cash = useDB((d) => (t ? d.cash.filter((c) => c.tenantId === t.id) : []));
 
   const stats = useMemo(() => {
-    const today = new Date().toISOString().slice(0, 10);
-    // Transaksi dibuat hari ini (termasuk piutang belum lunas — masuk Omset segera)
-    const todayTx = txs.filter((x) => x.createdAt.slice(0, 10) === today);
+    const todayStr = localDateStr();
+
+    // Transaksi hari ini (local timezone)
+    const todayTx = txs.filter((x) => localDateStr(new Date(x.createdAt)) === todayStr);
     const salesToday = todayTx.filter((x) => x.status !== "void");
-    // Omset kotor = seluruh penjualan (paid + unpaid) yang dibuat hari ini
     const omzet = salesToday.reduce((a, b) => a + b.total, 0);
     const count = salesToday.length;
     const voidCount = todayTx.filter((x) => x.status === "void").length;
 
-    // HPP produk terjual hari ini (seluruh penjualan non-void, terlepas status lunas)
+    // HPP
     let hpp = 0;
     let hppComplete = true;
     const missingSet = new Set<string>();
@@ -68,38 +76,45 @@ function KasirDashboard() {
 
     // Pengeluaran hari ini (kas out)
     const pengeluaranHariIni = cash
-      .filter((c) => c.type === "out" && c.createdAt.slice(0, 10) === today)
+      .filter((c) => c.type === "out" && localDateStr(new Date(c.createdAt)) === todayStr)
       .reduce((a, b) => a + b.amount, 0);
 
-    // Laba Kotor hari ini
     const labaKotor = omzet - hpp - pengeluaranHariIni;
 
-    // Uang MASUK hari ini — berdasarkan pelunasan (paidAt) hari ini
-    const paidReceivedToday = txs.filter(
-      (x) => x.status === "paid" && x.paidAt && x.paidAt.slice(0, 10) === today,
+    // Uang masuk hari ini (berdasarkan paidAt lokal)
+    const paidToday = txs.filter(
+      (x) => x.status === "paid" && x.paidAt && localDateStr(new Date(x.paidAt)) === todayStr,
     );
-    const cashHariIni = paidReceivedToday
+    // Jika tidak ada paidAt, gunakan createdAt
+    const paidTodayFallback = salesToday.filter(
+      (x) => x.status === "paid" && (!x.paidAt || localDateStr(new Date(x.paidAt)) !== todayStr)
+        ? localDateStr(new Date(x.createdAt)) === todayStr
+        : false,
+    );
+    const allPaidToday = [
+      ...paidToday,
+      ...paidTodayFallback.filter((x) => !paidToday.some((p) => p.id === x.id)),
+    ];
+
+    const cashHariIni = allPaidToday
       .filter((x) => x.method === "cash")
       .reduce((a, b) => a + b.total, 0);
-    const qrisHariIni = paidReceivedToday
+    const qrisHariIni = allPaidToday
       .filter((x) => x.method === "qris")
       .reduce((a, b) => a + b.total, 0);
-    const transferHariIni = paidReceivedToday
+    const transferHariIni = allPaidToday
       .filter((x) => x.method === "transfer")
       .reduce((a, b) => a + b.total, 0);
 
-    // Saldo kas fisik (all-time laci) — hanya transaksi PAID cash yang menambah kas
+    // Saldo kas fisik (all-time laci)
+    const sortedCash = [...cash].sort(
+      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+    );
     let saldoLaci = 0;
-    let currentFill = 0;
-    for (const c of cash) {
+    for (const c of sortedCash) {
       if (c.type === "fill") {
-        if (c.reset) {
-          currentFill = c.amount;
-          saldoLaci = currentFill;
-        } else {
-          currentFill += c.amount;
-          saldoLaci += c.amount;
-        }
+        if (c.reset) saldoLaci = c.amount;
+        else saldoLaci += c.amount;
       } else if (c.type === "in") saldoLaci += c.amount;
       else saldoLaci -= c.amount;
     }
@@ -107,7 +122,7 @@ function KasirDashboard() {
       .filter((x) => x.status === "paid" && x.method === "cash")
       .reduce((a, b) => a + b.total, 0);
 
-    // Produk terlaris hari ini (semua penjualan non-void)
+    // Produk terlaris hari ini
     const salesMap = new Map<string, number>();
     salesToday.forEach((x) =>
       x.items.forEach((i) => salesMap.set(i.name, (salesMap.get(i.name) ?? 0) + i.qty)),
@@ -158,7 +173,7 @@ function KasirDashboard() {
         <p className="text-sm text-muted-foreground">{t?.businessName}</p>
       </div>
 
-      {/* HIGHLIGHT - Laba Bersih */}
+      {/* HIGHLIGHT - Estimasi Laba Kotor */}
       <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-primary via-primary-glow to-primary p-6 text-primary-foreground shadow-elegant">
         <div className="absolute -right-8 -top-8 opacity-10">
           <Sparkles size={140} />
@@ -174,7 +189,6 @@ function KasirDashboard() {
             <div className="text-xs opacity-80 mt-1">
               {stats.missingCost} produk terjual belum memiliki Harga Modal.
             </div>
-            {/* Tombol hanya muncul jika Owner/Admin */}
             {isOwner && (
               <Link
                 to="/app/kasir/manajemen"
@@ -199,7 +213,7 @@ function KasirDashboard() {
         <div className="mb-2 px-1 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
           Ringkasan Finansial Hari Ini
         </div>
-        <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           <Stat
             icon={Coins}
             label="Omzet Kotor"
@@ -218,33 +232,42 @@ function KasirDashboard() {
             value={formatIDR(stats.pengeluaranHariIni)}
             tone="text-destructive"
           />
+          {/* Uang Tunai di Laci — saldo kas fisik saat ini */}
+          <Stat
+            icon={Wallet}
+            label="Uang Tunai di Laci"
+            value={formatIDR(stats.saldoLaci)}
+            tone="text-success"
+          />
         </div>
       </div>
 
-      {/* Breakdown Fisik Uang */}
+      {/* Rincian Uang Masuk */}
       <div>
         <div className="mb-2 px-1 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-          Breakdown Uang Masuk Hari Ini
+          Rincian Uang Masuk
         </div>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <Stat
-            icon={Wallet}
-            label="Uang Cash di Laci"
-            value={formatIDR(stats.saldoLaci)}
+            icon={Banknote}
+            label="Transaksi Tunai"
+            value={formatIDR(stats.cashHariIni)}
             tone="text-success"
-            sub={`Tunai hari ini: ${formatIDR(stats.cashHariIni)}`}
+            sub="Total penjualan tunai hari ini"
           />
           <Stat
             icon={QrCode}
-            label="Uang di QRIS"
+            label="Transaksi QRIS"
             value={formatIDR(stats.qrisHariIni)}
             tone="text-primary"
+            sub="Total penjualan QRIS hari ini"
           />
           <Stat
             icon={Landmark}
-            label="Uang di Transfer Bank"
+            label="Transaksi Transfer"
             value={formatIDR(stats.transferHariIni)}
             tone="text-primary"
+            sub="Total transfer bank hari ini"
           />
         </div>
       </div>
@@ -263,8 +286,6 @@ function KasirDashboard() {
             value={String(stats.voidCount)}
             tone="text-destructive"
           />
-
-          {/* Link Stok Hanya Aktif Jika Owner/Admin */}
           {isOwner ? (
             <Link to="/app/kasir/manajemen">
               <Stat
@@ -282,7 +303,6 @@ function KasirDashboard() {
               tone="text-warning"
             />
           )}
-
           <Stat
             icon={HandCoins}
             label="Piutang Aktif"
