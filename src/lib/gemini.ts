@@ -4,9 +4,10 @@ import { currentUser } from "@/lib/store";
 
 const BASE = "https://generativelanguage.googleapis.com/v1beta/models";
 const TEXT_MODEL = "gemini-2.0-flash";
-// Primary: Gemini 2.0 Flash image generation (image-to-image editing)
-const GEMINI_IMAGE_MODEL = "gemini-2.0-flash-preview-image-generation";
-// Fallback: Imagen 3 (text-to-image, available to all AI Studio API keys)
+// Primary: Gemini 2.0 Flash with image generation (responseModalities IMAGE+TEXT)
+// Updated from deprecated gemini-2.0-flash-preview-image-generation
+const GEMINI_IMAGE_MODEL = "gemini-2.0-flash";
+// Fallback: Imagen 3 (text-to-image, available to AI Studio API keys with billing)
 const IMAGEN_MODEL = "imagen-3.0-generate-002";
 
 export function getGeminiKey(): string | undefined {
@@ -77,6 +78,8 @@ function buildPosterPrompt(opts: PosterOptions): string {
 
 /**
  * Try Gemini 2.0 Flash image generation (image-to-image).
+ * Uses responseModalities: ["IMAGE", "TEXT"] which is the correct API for
+ * Gemini 2.0 Flash image generation (updated from deprecated preview model).
  * Returns base64 data URL or throws with { status } for fallback handling.
  */
 async function tryGeminiImageModel(key: string, opts: PosterOptions): Promise<string> {
@@ -104,7 +107,8 @@ async function tryGeminiImageModel(key: string, opts: PosterOptions): Promise<st
   });
 
   if (!res.ok) {
-    const err = new Error(`status:${res.status}`) as Error & { status: number };
+    const errText = await res.text();
+    const err = new Error(`status:${res.status}:${errText.slice(0, 200)}`) as Error & { status: number };
     err.status = res.status;
     throw err;
   }
@@ -119,6 +123,14 @@ async function tryGeminiImageModel(key: string, opts: PosterOptions): Promise<st
       .filter((p) => p.text)
       .map((p) => p.text)
       .join(" ");
+    // Check if the model returned a refusal or model-not-available message
+    if (textMsg?.toLowerCase().includes("tidak tersedia") ||
+        textMsg?.toLowerCase().includes("not available") ||
+        textMsg?.toLowerCase().includes("cannot generate")) {
+      const err = new Error(textMsg) as Error & { status: number };
+      err.status = 403; // treat as access denied → fallback to Imagen 3
+      throw err;
+    }
     const err = new Error(textMsg || "no_image") as Error & { status: number };
     err.status = 0;
     throw err;
@@ -127,10 +139,9 @@ async function tryGeminiImageModel(key: string, opts: PosterOptions): Promise<st
 }
 
 /**
- * Try Imagen 3 text-to-image (stable, available to all AI Studio API keys).
+ * Try Imagen 3 text-to-image (stable, available to AI Studio API keys with billing).
  */
 async function tryImagen3(key: string, opts: PosterOptions): Promise<string> {
-  // Build an even richer prompt since we don't have the source image here
   const prompt = [
     `Professional advertising poster for a ${opts.productLabel} product.`,
     `Design style: ${opts.styleDescription}.`,
@@ -167,7 +178,7 @@ async function tryImagen3(key: string, opts: PosterOptions): Promise<string> {
     if (status === 400) throw new Error("Prompt tidak valid. Coba sederhanakan teks atau ubah prompt tambahan.");
     if (status === 403)
       throw new Error(
-        "API Key tidak valid atau tidak memiliki akses. Pastikan key dari Google AI Studio (aistudio.google.com/apikey) dan sudah diaktifkan.",
+        "API Key tidak memiliki akses ke model image generation. Pastikan API Key Anda dari Google AI Studio (aistudio.google.com/apikey) dan format key sudah benar (biasanya diawali AIzaSy...). Jika sudah benar, aktifkan billing di Google Cloud Console untuk mengakses Imagen.",
       );
     throw new Error(`Imagen error (${status}): ${errText.slice(0, 200)}`);
   }
@@ -185,8 +196,8 @@ async function tryImagen3(key: string, opts: PosterOptions): Promise<string> {
 /**
  * Generate advertising poster.
  * Strategy:
- *  1. Try Gemini 2.0 Flash Preview image generation (image-to-image, best quality).
- *  2. If 404/403 (model not available for this key), fall back to Imagen 3 text-to-image.
+ *  1. Try Gemini 2.0 Flash image generation (image-to-image).
+ *  2. If 404/403/model-not-available, fall back to Imagen 3 text-to-image.
  * Returns the result image as a base64 data URL.
  */
 export async function generatePosterImage(opts: PosterOptions): Promise<string> {
@@ -197,14 +208,13 @@ export async function generatePosterImage(opts: PosterOptions): Promise<string> 
     );
   }
 
-  // ── Attempt 1: Gemini Flash image generation (image-to-image) ──
+  // ── Attempt 1: Gemini 2.0 Flash image generation (image-to-image) ──
   try {
     return await tryGeminiImageModel(key, opts);
   } catch (e) {
     const status = (e as { status?: number }).status;
-    // 404 = model not available, 403 = access denied → fall through to Imagen 3
+    // 404 = model not found, 403 = access denied, 0 = model returned text (not image) → fall through to Imagen 3
     if (status !== 404 && status !== 403 && status !== 0) {
-      // Other errors (400 bad request, 429 quota, etc.) — surface to user
       const status2 = status ?? 0;
       if (status2 === 400)
         throw new Error(
@@ -214,10 +224,20 @@ export async function generatePosterImage(opts: PosterOptions): Promise<string> 
         throw new Error("Kuota API Key habis. Coba lagi beberapa saat kemudian.");
       throw e;
     }
-    // Fall through to Imagen 3
     console.warn("[gemini] Gemini image model not available (status:", status, "), falling back to Imagen 3");
   }
 
-  // ── Attempt 2: Imagen 3 text-to-image (always available) ──
-  return await tryImagen3(key, opts);
+  // ── Attempt 2: Imagen 3 text-to-image ──
+  try {
+    return await tryImagen3(key, opts);
+  } catch (e) {
+    const msg = (e as Error).message ?? "";
+    // If Imagen 3 also fails with access error, give a clear explanation
+    if (msg.includes("tidak memiliki akses") || msg.includes("403")) {
+      throw new Error(
+        "API Key ini belum mendukung image generation. Pastikan format key benar (AIzaSy...) atau aktifkan billing di Google Cloud Console. Dapatkan key baru di aistudio.google.com/apikey.",
+      );
+    }
+    throw e;
+  }
 }
