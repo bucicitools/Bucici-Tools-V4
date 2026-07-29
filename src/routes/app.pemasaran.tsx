@@ -1,10 +1,44 @@
-import { createFileRoute } from "@tanstack/react-router";
-import { useState } from "react";
-import { Upload, Download, Loader2, Sparkles, ImageIcon } from "lucide-react";
+import { createFileRoute, Link } from "@tanstack/react-router";
+import { useState, useEffect } from "react";
+import { Upload, Download, Loader2, Sparkles, ImageIcon, AlertCircle, KeyRound } from "lucide-react";
 import { toast } from "sonner";
-import { generatePosterImage } from "@/lib/huggingface";
+import { getGeminiKey, generatePosterImage } from "@/lib/gemini";
 
 export const Route = createFileRoute("/app/pemasaran")({ component: Pemasaran });
+
+// ─── Kuota harian ────────────────────────────────────────────────────────────
+const QUOTA_KEY = "bucici_poster_quota";
+const DAILY_LIMIT = 10;
+
+interface QuotaRecord {
+  date: string; // YYYY-MM-DD
+  count: number;
+}
+
+function getTodayStr(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function getQuota(): QuotaRecord {
+  try {
+    const raw = localStorage.getItem(QUOTA_KEY);
+    if (!raw) return { date: getTodayStr(), count: 0 };
+    const rec = JSON.parse(raw) as QuotaRecord;
+    if (rec.date !== getTodayStr()) return { date: getTodayStr(), count: 0 };
+    return rec;
+  } catch {
+    return { date: getTodayStr(), count: 0 };
+  }
+}
+
+function incrementQuota(): number {
+  const rec = getQuota();
+  const next = { date: getTodayStr(), count: rec.count + 1 };
+  localStorage.setItem(QUOTA_KEY, JSON.stringify(next));
+  return next.count;
+}
+
+// ─── Konstanta ───────────────────────────────────────────────────────────────
 
 const PRODUCT_TYPES = [
   { k: "fnb",        label: "Makanan & Minuman" },
@@ -17,20 +51,20 @@ const PRODUCT_TYPES = [
 ];
 
 const STYLES = [
-  { k: "fresh",      label: "Fresh Style",          desc: "fresh clean minimal aesthetic, soft daylight, bright whites and mint accents" },
-  { k: "bold",       label: "Bold Style",            desc: "bold high-contrast commercial style, saturated primary colors, thick sans-serif typography" },
-  { k: "hot",        label: "Hot Style",             desc: "hot red and orange gradient, flame accents, appetizing steam, high energy" },
-  { k: "traditional",label: "Traditional Style",     desc: "traditional Indonesian heritage, batik ornament, warm brown and gold, rustic wood" },
-  { k: "playful",    label: "Playful Style",         desc: "playful pop style, pastel confetti, bubbles, cheerful mood" },
-  { k: "natural",    label: "Natural Photography",   desc: "natural photography editorial, soft studio lighting, shallow depth of field" },
-  { k: "youth",      label: "Youth Fun Poster",      desc: "youth gen-z poster, bold color blocks, sticker collage, halftone dots" },
-  { k: "street",     label: "Street Fun Poster",     desc: "urban street style, graffiti spray, neon signage, city night vibe" },
-  { k: "rustic",     label: "Rustic Style",          desc: "rustic artisan, kraft paper background, hand-lettered typography, warm earth tones" },
-  { k: "emoji",      label: "Emoji Style",           desc: "cheerful emoji-based composition, chat-bubble callouts, bright yellow accents" },
-  { k: "splash",     label: "Splash Style",          desc: "dynamic splash of liquid or paint, motion-frozen droplets, dramatic lighting" },
-  { k: "ramadhan",   label: "Ramadhan Style",        desc: "ramadhan festive theme, lantern, crescent moon, deep green and gold, arabesque ornaments" },
-  { k: "lebaran",    label: "Lebaran Style",         desc: "lebaran festive, ketupat, mosque silhouette, warm gold and emerald" },
-  { k: "holiday",    label: "Holiday Style",         desc: "holiday celebration, festive garland, glowing lights, gift accents" },
+  { k: "fresh",       label: "Fresh Style",         desc: "fresh clean minimal aesthetic, soft daylight, bright whites and mint accents" },
+  { k: "bold",        label: "Bold Style",           desc: "bold high-contrast commercial style, saturated primary colors, thick sans-serif typography" },
+  { k: "hot",         label: "Hot Style",            desc: "hot red and orange gradient, flame accents, appetizing steam, high energy" },
+  { k: "traditional", label: "Traditional Style",    desc: "traditional Indonesian heritage, batik ornament, warm brown and gold, rustic wood" },
+  { k: "playful",     label: "Playful Style",        desc: "playful pop style, pastel confetti, bubbles, cheerful mood" },
+  { k: "natural",     label: "Natural Photography",  desc: "natural photography editorial, soft studio lighting, shallow depth of field" },
+  { k: "youth",       label: "Youth Fun Poster",     desc: "youth gen-z poster, bold color blocks, sticker collage, halftone dots" },
+  { k: "street",      label: "Street Fun Poster",    desc: "urban street style, graffiti spray, neon signage, city night vibe" },
+  { k: "rustic",      label: "Rustic Style",         desc: "rustic artisan, kraft paper background, hand-lettered typography, warm earth tones" },
+  { k: "emoji",       label: "Emoji Style",          desc: "cheerful emoji-based composition, chat-bubble callouts, bright yellow accents" },
+  { k: "splash",      label: "Splash Style",         desc: "dynamic splash of liquid or paint, motion-frozen droplets, dramatic lighting" },
+  { k: "ramadhan",    label: "Ramadhan Style",       desc: "ramadhan festive theme, lantern, crescent moon, deep green and gold, arabesque ornaments" },
+  { k: "lebaran",     label: "Lebaran Style",        desc: "lebaran festive, ketupat, mosque silhouette, warm gold and emerald" },
+  { k: "holiday",     label: "Holiday Style",        desc: "holiday celebration, festive garland, glowing lights, gift accents" },
 ];
 
 const RATIOS = [
@@ -41,12 +75,14 @@ const RATIOS = [
 ];
 
 const LOADING_STEPS = [
-  "Menganalisis foto produk...",
-  "Membangun komposisi poster...",
+  "Membaca foto produk...",
+  "Menganalisis komposisi...",
   "Menerapkan gaya desain...",
   "Menyusun tipografi & teks...",
   "Merender hasil final...",
 ];
+
+// ─── Komponen utama ──────────────────────────────────────────────────────────
 
 function Pemasaran() {
   const [img, setImg]           = useState<string | null>(null);
@@ -62,8 +98,16 @@ function Pemasaran() {
   const [loading, setLoading]   = useState(false);
   const [stepIdx, setStepIdx]   = useState(0);
   const [result, setResult]     = useState<string | null>(null);
+  const [quotaUsed, setQuotaUsed] = useState(0);
 
-  const styleDef    = STYLES.find((s) => s.k === styleKey)!;
+  // Baca kuota saat mount
+  useEffect(() => {
+    setQuotaUsed(getQuota().count);
+  }, []);
+
+  const hasKey     = !!getGeminiKey();
+  const quotaLeft  = Math.max(0, DAILY_LIMIT - quotaUsed);
+  const styleDef   = STYLES.find((s) => s.k === styleKey)!;
   const productLabel = PRODUCT_TYPES.find((p) => p.k === productType)!.label;
 
   function upload(e: React.ChangeEvent<HTMLInputElement>) {
@@ -93,15 +137,27 @@ function Pemasaran() {
 
   async function generate() {
     if (!img) { toast.error("Upload foto produk terlebih dahulu."); return; }
+    if (!hasKey) {
+      toast.error("Masukkan Gemini API Key di Pengaturan → Kunci AI Pribadi.");
+      return;
+    }
+    if (quotaLeft <= 0) {
+      toast.error(`Kuota harian habis (${DAILY_LIMIT}×/hari). Coba lagi besok.`);
+      return;
+    }
+
     setLoading(true); setResult(null); setStepIdx(0);
     let idx = 0;
-    const iv = setInterval(() => { idx = Math.min(idx + 1, LOADING_STEPS.length - 1); setStepIdx(idx); }, 4000);
+    const iv = setInterval(() => { idx = Math.min(idx + 1, LOADING_STEPS.length - 1); setStepIdx(idx); }, 3000);
+
     try {
       const dataUrl = await generatePosterImage({
         imageDataUrl: img, title, tagline, cta, contact: extra,
         styleLabel: styleDef.label, styleDescription: styleDef.desc,
         productLabel, ratio, customPrompt,
       });
+      const newCount = incrementQuota();
+      setQuotaUsed(newCount);
       setResult(dataUrl);
       toast.success("Poster berhasil dibuat!");
     } catch (e) {
@@ -119,20 +175,60 @@ function Pemasaran() {
     a.click();
   }
 
+  const canGenerate = hasKey && quotaLeft > 0 && !!img && !loading;
+
   return (
     <div className="min-h-screen -m-4 sm:-m-6 p-4 sm:p-6 bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white rounded-3xl">
-      <div className="mb-4">
-        <h1 className="text-xl sm:text-2xl font-bold flex items-center gap-2">
-          <Sparkles className="text-purple-400" /> Studio Poster AI
-        </h1>
-        <p className="text-xs sm:text-sm text-slate-400">
-          Generate poster iklan dari foto produk · Powered by Pollinations AI (FLUX) · Gratis tanpa setup
-        </p>
+      {/* Header */}
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <h1 className="text-xl sm:text-2xl font-bold flex items-center gap-2">
+            <Sparkles className="text-purple-400" /> Studio Poster AI
+          </h1>
+          <p className="text-xs sm:text-sm text-slate-400 mt-0.5">
+            Generate poster iklan dari foto produk · Powered by Gemini AI (image-to-image)
+          </p>
+        </div>
+        {/* Indikator kuota */}
+        {hasKey && (
+          <div className={`rounded-xl px-3 py-1.5 text-xs font-semibold flex items-center gap-1.5 ${
+            quotaLeft > 3
+              ? "bg-emerald-500/20 text-emerald-300"
+              : quotaLeft > 0
+              ? "bg-amber-500/20 text-amber-300"
+              : "bg-red-500/20 text-red-300"
+          }`}>
+            <Sparkles size={12} />
+            {quotaLeft > 0 ? `Kuota: ${quotaLeft}/${DAILY_LIMIT} hari ini` : "Kuota habis — reset besok"}
+          </div>
+        )}
       </div>
+
+      {/* Banner: belum ada key */}
+      {!hasKey && (
+        <div className="mb-4 flex items-start gap-3 rounded-2xl bg-amber-500/10 border border-amber-500/30 p-4">
+          <AlertCircle className="text-amber-400 mt-0.5 shrink-0" size={18} />
+          <div className="text-sm">
+            <p className="font-semibold text-amber-300">Gemini API Key belum diatur</p>
+            <p className="text-amber-200/70 text-xs mt-0.5">
+              Buka{" "}
+              <Link to="/app/pengaturan" className="underline font-medium text-amber-300">
+                Pengaturan → Kunci AI Pribadi
+              </Link>{" "}
+              lalu tempel key dari{" "}
+              <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer" className="underline text-amber-300">
+                aistudio.google.com/apikey
+              </a>
+              {" "}(gratis, tanpa billing).
+            </p>
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-[360px_1fr] gap-4">
         {/* Panel kiri */}
         <div className="space-y-3">
+          {/* Upload foto */}
           <div className="rounded-2xl bg-white/5 border border-white/10 p-4 space-y-2">
             <p className="text-xs font-semibold text-slate-300 uppercase tracking-wide">Foto Produk</p>
             <label className="block cursor-pointer">
@@ -145,6 +241,7 @@ function Pemasaran() {
             {img && <img src={img} alt="Preview" className="rounded-lg h-28 w-full object-cover border border-white/10" />}
           </div>
 
+          {/* Kategori & Gaya */}
           <div className="rounded-2xl bg-white/5 border border-white/10 p-4 space-y-3">
             <p className="text-xs font-semibold text-slate-300 uppercase tracking-wide">Kategori & Gaya</p>
             <F l="Jenis Bisnis">
@@ -164,28 +261,43 @@ function Pemasaran() {
             </F>
           </div>
 
+          {/* Teks poster */}
           <div className="rounded-2xl bg-white/5 border border-white/10 p-4 space-y-3">
             <p className="text-xs font-semibold text-slate-300 uppercase tracking-wide">Teks Poster</p>
-            <F l="Judul / Nama Produk"><input value={title} onChange={(e) => setTitle(e.target.value)} className="inp" placeholder="Misal: Nasi Goreng Spesial" /></F>
+            <F l="Judul / Nama Produk"><input value={title} onChange={(e) => setTitle(e.target.value)} className="inp" placeholder="Misal: Sate Kulit Kriuk" /></F>
             <F l="Tagline"><input value={tagline} onChange={(e) => setTagline(e.target.value)} className="inp" placeholder="Kalimat pemikat singkat" /></F>
             <F l="Call to Action"><input value={cta} onChange={(e) => setCta(e.target.value)} className="inp" /></F>
             <F l="Kontak / Info Tambahan"><input value={extra} onChange={(e) => setExtra(e.target.value)} className="inp" placeholder="No. WA, alamat, promo, dll" /></F>
-            <F l="Detail Prompt Tambahan (opsional)">
-              <textarea value={customPrompt} onChange={(e) => setCustomPrompt(e.target.value)} className="inp min-h-[60px] resize-none" placeholder="Contoh: tambahkan bendera merah putih di sudut kanan" />
+            <F l="Prompt Tambahan (opsional)">
+              <textarea value={customPrompt} onChange={(e) => setCustomPrompt(e.target.value)}
+                className="inp min-h-[60px] resize-none"
+                placeholder="Contoh: tambahkan bendera merah putih di sudut kanan" />
             </F>
           </div>
 
           <button
             onClick={generate}
-            disabled={loading || !img}
+            disabled={!canGenerate}
             className="w-full rounded-xl bg-gradient-to-r from-fuchsia-600 via-purple-600 to-indigo-600 py-3 font-bold flex items-center justify-center gap-2 disabled:opacity-40 transition"
           >
             {loading ? <Loader2 className="animate-spin" size={16} /> : <Sparkles size={16} />}
-            {loading ? "Generating poster..." : "Generate Poster Iklan"}
+            {loading
+              ? "Generating poster..."
+              : !hasKey
+              ? "Perlu API Key Gemini"
+              : quotaLeft <= 0
+              ? "Kuota habis hari ini"
+              : "Generate Poster Iklan"}
           </button>
+
+          {hasKey && (
+            <p className="text-center text-xs text-slate-500">
+              Sisa kuota hari ini: <span className={quotaLeft > 0 ? "text-emerald-400 font-semibold" : "text-red-400 font-semibold"}>{quotaLeft}</span>/{DAILY_LIMIT}
+            </p>
+          )}
         </div>
 
-        {/* Panel kanan */}
+        {/* Panel kanan — hasil */}
         <div className="rounded-2xl bg-white/5 border border-white/10 p-4 min-h-[420px] flex items-center justify-center">
           {loading ? (
             <div className="flex flex-col items-center gap-4 text-center px-4">
@@ -194,7 +306,7 @@ function Pemasaran() {
                 <Sparkles className="absolute inset-0 m-auto text-purple-300" size={24} />
               </div>
               <div className="text-sm font-semibold text-fuchsia-200">{LOADING_STEPS[stepIdx]}</div>
-              <div className="text-xs text-slate-400">Mohon tunggu sekitar 15–40 detik</div>
+              <div className="text-xs text-slate-400">Mohon tunggu sekitar 15–30 detik</div>
               <div className="flex gap-1">
                 {LOADING_STEPS.map((_, i) => (
                   <div key={i} className={`h-1 w-6 rounded-full transition-all ${i <= stepIdx ? "bg-purple-400" : "bg-white/10"}`} />
@@ -208,10 +320,19 @@ function Pemasaran() {
                 <button onClick={downloadResult} className="rounded-lg bg-black/70 backdrop-blur px-3 py-2 text-xs flex items-center gap-1 hover:bg-black/90 transition">
                   <Download size={14} /> Download PNG
                 </button>
-                <button onClick={generate} className="rounded-lg bg-purple-600/80 backdrop-blur px-3 py-2 text-xs flex items-center gap-1 hover:bg-purple-600 transition">
+                <button onClick={generate} disabled={quotaLeft <= 0} className="rounded-lg bg-purple-600/80 backdrop-blur px-3 py-2 text-xs flex items-center gap-1 hover:bg-purple-600 disabled:opacity-40 transition">
                   <Sparkles size={14} /> Generate Ulang
                 </button>
               </div>
+            </div>
+          ) : !hasKey ? (
+            <div className="text-center space-y-3 px-6">
+              <KeyRound className="mx-auto text-amber-400" size={40} />
+              <p className="text-sm font-semibold text-amber-300">Perlu Gemini API Key</p>
+              <p className="text-xs text-slate-400">Buka Pengaturan, masukkan key dari aistudio.google.com/apikey (gratis)</p>
+              <Link to="/app/pengaturan" className="inline-block mt-2 rounded-xl bg-amber-500/20 border border-amber-500/40 px-4 py-2 text-xs font-semibold text-amber-300 hover:bg-amber-500/30 transition">
+                Buka Pengaturan →
+              </Link>
             </div>
           ) : (
             <div className="text-center text-slate-500 space-y-3">
