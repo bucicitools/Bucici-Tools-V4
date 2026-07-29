@@ -1,9 +1,9 @@
 // Google Gemini client with BYOK support.
 // Priority: user's own key (profile) → VITE_GEMINI_API_KEY (env)
 //
-// Key format detection:
-//   AQ.Ab... → newer AI Studio key, must be sent as: Authorization: Bearer <key>
-//   AIzaSy... → classic API key, sent as: ?key=<key>
+// Key format:
+//   AQ.Ab... → newer AI Studio key, sent via x-goog-api-key header
+//   AIzaSy... → classic API key, sent via ?key= query param
 import { currentUser } from "@/lib/store";
 
 const BASE = "https://generativelanguage.googleapis.com/v1beta/models";
@@ -20,14 +20,14 @@ export function getGeminiKey(): string | undefined {
 
 /**
  * Build fetch URL and headers depending on key format.
- * AQ.Ab... keys require Authorization: Bearer header.
- * AIzaSy... keys use ?key= query param (classic).
+ * AQ.Ab... → x-goog-api-key header (no query param)
+ * AIzaSy... → ?key= query param (classic)
  */
-function buildRequest(endpoint: string, key: string, body: unknown): { url: string; headers: Record<string, string> } {
-  const isBearer = key.startsWith("AQ.");
-  const url = isBearer ? endpoint : `${endpoint}?key=${key}`;
+function buildRequest(endpoint: string, key: string): { url: string; headers: Record<string, string> } {
+  const isNewFormat = key.startsWith("AQ.");
+  const url = isNewFormat ? endpoint : `${endpoint}?key=${key}`;
   const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (isBearer) headers["Authorization"] = `Bearer ${key}`;
+  if (isNewFormat) headers["x-goog-api-key"] = key;
   return { url, headers };
 }
 
@@ -40,12 +40,8 @@ export async function askGemini(prompt: string, system?: string): Promise<string
     contents: [{ role: "user", parts: [{ text: prompt }] }],
     ...(system ? { systemInstruction: { role: "system", parts: [{ text: system }] } } : {}),
   };
-  const { url, headers } = buildRequest(`${BASE}/${TEXT_MODEL}:generateContent`, key, body);
-  const res = await fetch(url, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-  });
+  const { url, headers } = buildRequest(`${BASE}/${TEXT_MODEL}:generateContent`, key);
+  const res = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
   if (!res.ok) {
     const t = await res.text();
     throw new Error(`Gemini error ${res.status}: ${t.slice(0, 200)}`);
@@ -59,7 +55,6 @@ export async function askGemini(prompt: string, system?: string): Promise<string
 }
 
 export interface PosterOptions {
-  /** Source product image as base64 data URL (data:image/...;base64,...) */
   imageDataUrl: string;
   title: string;
   tagline: string;
@@ -106,12 +101,8 @@ async function tryGeminiImageModel(key: string, opts: PosterOptions): Promise<st
     generationConfig: { responseModalities: ["IMAGE", "TEXT"] },
   };
 
-  const { url, headers } = buildRequest(`${BASE}/${GEMINI_IMAGE_MODEL}:generateContent`, key, body);
-  const res = await fetch(url, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-  });
+  const { url, headers } = buildRequest(`${BASE}/${GEMINI_IMAGE_MODEL}:generateContent`, key);
+  const res = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
 
   if (!res.ok) {
     const errText = await res.text();
@@ -126,10 +117,7 @@ async function tryGeminiImageModel(key: string, opts: PosterOptions): Promise<st
 
   const imagePart = parts.find((p) => p.inline_data?.data);
   if (!imagePart?.inline_data) {
-    const textMsg = parts
-      .filter((p) => p.text)
-      .map((p) => p.text)
-      .join(" ");
+    const textMsg = parts.filter((p) => p.text).map((p) => p.text).join(" ");
     if (
       textMsg?.toLowerCase().includes("tidak tersedia") ||
       textMsg?.toLowerCase().includes("not available") ||
@@ -166,24 +154,16 @@ async function tryImagen3(key: string, opts: PosterOptions): Promise<string> {
     parameters: {
       sampleCount: 1,
       aspectRatio:
-        opts.ratio === "4:5"
-          ? "4:5"
-          : opts.ratio === "9:16"
-          ? "9:16"
-          : opts.ratio === "16:9"
-          ? "16:9"
-          : "1:1",
+        opts.ratio === "4:5" ? "4:5" :
+        opts.ratio === "9:16" ? "9:16" :
+        opts.ratio === "16:9" ? "16:9" : "1:1",
       safetyFilterLevel: "block_some",
       personGeneration: "allow_adult",
     },
   };
 
-  const { url, headers } = buildRequest(`${BASE}/${IMAGEN_MODEL}:predict`, key, body);
-  const res = await fetch(url, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-  });
+  const { url, headers } = buildRequest(`${BASE}/${IMAGEN_MODEL}:predict`, key);
+  const res = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
 
   if (!res.ok) {
     const errText = await res.text();
@@ -191,7 +171,7 @@ async function tryImagen3(key: string, opts: PosterOptions): Promise<string> {
     if (status === 400) throw new Error("Prompt tidak valid. Coba sederhanakan teks atau ubah prompt tambahan.");
     if (status === 403)
       throw new Error(
-        "API Key tidak memiliki akses ke model image generation. Pastikan format key benar. Jika sudah benar, aktifkan billing di Google Cloud Console untuk mengakses Imagen.",
+        "API Key tidak memiliki akses ke model image generation. Aktifkan billing di Google Cloud Console untuk mengakses Imagen.",
       );
     throw new Error(`Imagen error (${status}): ${errText.slice(0, 200)}`);
   }
@@ -204,12 +184,6 @@ async function tryImagen3(key: string, opts: PosterOptions): Promise<string> {
   return `data:${pred.mimeType ?? "image/png"};base64,${pred.bytesBase64Encoded}`;
 }
 
-/**
- * Generate advertising poster.
- * Strategy:
- * 1. Try Gemini 2.0 Flash image generation (image-to-image).
- * 2. If 404/403/model-not-available, fall back to Imagen 3 text-to-image.
- */
 export async function generatePosterImage(opts: PosterOptions): Promise<string> {
   const key = getGeminiKey();
   if (!key) {
@@ -218,23 +192,21 @@ export async function generatePosterImage(opts: PosterOptions): Promise<string> 
     );
   }
 
-  // ── Attempt 1: Gemini 2.0 Flash image generation (image-to-image) ──
+  // Attempt 1: Gemini 2.0 Flash image-to-image
   try {
     return await tryGeminiImageModel(key, opts);
   } catch (e) {
     const status = (e as { status?: number }).status;
     if (status !== 404 && status !== 403 && status !== 0) {
-      const status2 = status ?? 0;
-      if (status2 === 400)
-        throw new Error("Format gambar tidak valid. Coba gunakan gambar JPG/PNG yang lebih sederhana.");
-      if (status2 === 429)
-        throw new Error("Kuota API Key habis. Coba lagi beberapa saat kemudian.");
+      const s = status ?? 0;
+      if (s === 400) throw new Error("Format gambar tidak valid. Coba gunakan gambar JPG/PNG yang lebih sederhana.");
+      if (s === 429) throw new Error("Kuota API Key habis. Coba lagi beberapa saat kemudian.");
       throw e;
     }
     console.warn("[gemini] Gemini image model not available (status:", status, "), falling back to Imagen 3");
   }
 
-  // ── Attempt 2: Imagen 3 text-to-image ──
+  // Attempt 2: Imagen 3 text-to-image
   try {
     return await tryImagen3(key, opts);
   } catch (e) {
