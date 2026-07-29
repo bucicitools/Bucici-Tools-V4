@@ -7,12 +7,32 @@
   "display": "standalone",
   "display_override": ["standalone", "fullscreen"],
   "orientation": "portrait",
-  "background_color": "#1e50b4",
-  "theme_color": "#1e50b4",
+  "background_color": "#1874D2",
+  "theme_color": "#1874D2",
   "icons": [
-    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
-    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
-    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+    {
+      "src": "https://hercules-cdn.com/file_XLZTx2Sp97CGAkNXkVNXQqZk",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "https://hercules-cdn.com/file_XLZTx2Sp97CGAkNXkVNXQqZk",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "https://hercules-cdn.com/file_XLZTx2Sp97CGAkNXkVNXQqZk",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "https://hercules-cdn.com/file_XLZTx2Sp97CGAkNXkVNXQqZk",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
   ]
 }

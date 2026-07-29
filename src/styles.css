@@ -53,28 +53,29 @@
 :root {
   --radius: 0.875rem;
 
-  /* Premium Blue Metallic + Crisp White */
-  --background: oklch(0.985 0.005 240);
-  --foreground: oklch(0.22 0.08 258);
+  /* Bucici Brand Blue #1874D2 */
+  --background: oklch(0.985 0.004 240);
+  --foreground: oklch(0.20 0.06 255);
 
   --card: oklch(1 0 0);
-  --card-foreground: oklch(0.22 0.08 258);
+  --card-foreground: oklch(0.20 0.06 255);
 
   --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.22 0.08 258);
+  --popover-foreground: oklch(0.20 0.06 255);
 
-  --primary: oklch(0.42 0.16 258);
-  --primary-foreground: oklch(0.99 0 0);
-  --primary-glow: oklch(0.62 0.18 245);
+  /* #1874D2 = oklch(0.55 0.19 251) — Bucici bright blue */
+  --primary: oklch(0.55 0.19 251);
+  --primary-foreground: oklch(1 0 0);
+  --primary-glow: oklch(0.68 0.17 245);
 
-  --secondary: oklch(0.94 0.02 245);
-  --secondary-foreground: oklch(0.3 0.1 258);
+  --secondary: oklch(0.93 0.025 248);
+  --secondary-foreground: oklch(0.28 0.08 255);
 
   --muted: oklch(0.95 0.012 245);
-  --muted-foreground: oklch(0.5 0.03 250);
+  --muted-foreground: oklch(0.50 0.03 250);
 
-  --accent: oklch(0.9 0.05 245);
-  --accent-foreground: oklch(0.28 0.1 258);
+  --accent: oklch(0.91 0.04 248);
+  --accent-foreground: oklch(0.25 0.10 255);
 
   --destructive: oklch(0.58 0.22 25);
   --destructive-foreground: oklch(0.99 0 0);
@@ -85,62 +86,96 @@
   --warning: oklch(0.65 0.17 55);
   --warning-foreground: oklch(0.99 0 0);
 
-  --border: oklch(0.9 0.015 245);
-  --input: oklch(0.94 0.012 245);
-  --ring: oklch(0.55 0.15 250);
+  --border: oklch(0.90 0.014 245);
+  --input: oklch(0.93 0.012 245);
+  --ring: oklch(0.55 0.19 251);
 
-  --chart-1: oklch(0.55 0.18 250);
-  --chart-2: oklch(0.65 0.15 200);
+  --chart-1: oklch(0.55 0.19 251);
+  --chart-2: oklch(0.65 0.16 195);
   --chart-3: oklch(0.62 0.16 150);
-  --chart-4: oklch(0.7 0.15 55);
-  --chart-5: oklch(0.55 0.2 300);
+  --chart-4: oklch(0.70 0.16 55);
+  --chart-5: oklch(0.58 0.21 300);
 
-  --sidebar: oklch(0.98 0.005 240);
-  --sidebar-foreground: oklch(0.22 0.08 258);
-  --sidebar-primary: oklch(0.42 0.16 258);
-  --sidebar-primary-foreground: oklch(0.99 0 0);
-  --sidebar-accent: oklch(0.93 0.03 245);
-  --sidebar-accent-foreground: oklch(0.28 0.1 258);
-  --sidebar-border: oklch(0.9 0.015 245);
-  --sidebar-ring: oklch(0.55 0.15 250);
+  --sidebar: oklch(0.975 0.008 248);
+  --sidebar-foreground: oklch(0.20 0.06 255);
+  --sidebar-primary: oklch(0.55 0.19 251);
+  --sidebar-primary-foreground: oklch(1 0 0);
+  --sidebar-accent: oklch(0.91 0.035 248);
+  --sidebar-accent-foreground: oklch(0.25 0.10 255);
+  --sidebar-border: oklch(0.90 0.014 245);
+  --sidebar-ring: oklch(0.55 0.19 251);
 
-  --gradient-primary: linear-gradient(135deg, var(--primary), var(--primary-glow));
+  /* Gradients */
+  --gradient-primary: linear-gradient(135deg, oklch(0.55 0.19 251), oklch(0.68 0.17 245));
   --gradient-metallic: linear-gradient(
     135deg,
     oklch(0.98 0.01 245),
-    oklch(0.9 0.03 250),
+    oklch(0.91 0.03 250),
     oklch(0.98 0.01 245)
   );
 
-  /* Neumorphism */
+  /* Neumorphism — tuned for Bucici blue tint */
   --neu-light: oklch(1 0 0);
-  --neu-dark: oklch(0.88 0.02 245);
-  --shadow-neu: 6px 6px 16px oklch(0.85 0.02 245 / 0.5), -6px -6px 16px oklch(1 0 0 / 0.9);
-  --shadow-neu-sm: 3px 3px 8px oklch(0.85 0.02 245 / 0.5), -3px -3px 8px oklch(1 0 0 / 0.9);
+  --neu-dark: oklch(0.87 0.022 245);
+  --shadow-neu: 6px 6px 16px oklch(0.84 0.025 245 / 0.55), -6px -6px 16px oklch(1 0 0 / 0.9);
+  --shadow-neu-sm: 3px 3px 8px oklch(0.84 0.025 245 / 0.55), -3px -3px 8px oklch(1 0 0 / 0.9);
   --shadow-neu-inset:
-    inset 3px 3px 6px oklch(0.85 0.02 245 / 0.5), inset -3px -3px 6px oklch(1 0 0 / 0.9);
-  --shadow-elegant: 0 10px 30px -10px oklch(0.42 0.16 258 / 0.35);
+    inset 3px 3px 6px oklch(0.84 0.025 245 / 0.55), inset -3px -3px 6px oklch(1 0 0 / 0.9);
+  --shadow-elegant: 0 10px 30px -10px oklch(0.55 0.19 251 / 0.40);
 }
 
 .dark {
-  --background: oklch(0.18 0.03 258);
+  --background: oklch(0.17 0.04 258);
   --foreground: oklch(0.96 0.01 245);
-  --card: oklch(0.22 0.04 258);
+  --card: oklch(0.21 0.045 258);
   --card-foreground: oklch(0.96 0.01 245);
-  --popover: oklch(0.22 0.04 258);
+  --popover: oklch(0.21 0.045 258);
   --popover-foreground: oklch(0.96 0.01 245);
-  --primary: oklch(0.65 0.18 245);
-  --primary-foreground: oklch(0.15 0.03 258);
-  --secondary: oklch(0.28 0.04 258);
+  /* Slightly brighter blue in dark mode for contrast */
+  --primary: oklch(0.66 0.19 248);
+  --primary-foreground: oklch(0.12 0.04 258);
+  --primary-glow: oklch(0.75 0.16 244);
+  --secondary: oklch(0.27 0.045 258);
   --secondary-foreground: oklch(0.96 0.01 245);
-  --muted: oklch(0.28 0.04 258);
-  --muted-foreground: oklch(0.7 0.03 245);
-  --accent: oklch(0.32 0.06 258);
+  --muted: oklch(0.27 0.045 258);
+  --muted-foreground: oklch(0.70 0.03 245);
+  --accent: oklch(0.31 0.065 258);
   --accent-foreground: oklch(0.96 0.01 245);
   --destructive: oklch(0.65 0.22 25);
+  --destructive-foreground: oklch(0.99 0 0);
+  --success: oklch(0.62 0.16 150);
+  --success-foreground: oklch(0.99 0 0);
+  --warning: oklch(0.65 0.17 55);
+  --warning-foreground: oklch(0.99 0 0);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.65 0.18 245);
+  --ring: oklch(0.66 0.19 248);
+  --chart-1: oklch(0.66 0.19 248);
+  --chart-2: oklch(0.65 0.16 195);
+  --chart-3: oklch(0.62 0.16 150);
+  --chart-4: oklch(0.70 0.16 55);
+  --chart-5: oklch(0.65 0.20 300);
+  --sidebar: oklch(0.19 0.04 258);
+  --sidebar-foreground: oklch(0.96 0.01 245);
+  --sidebar-primary: oklch(0.66 0.19 248);
+  --sidebar-primary-foreground: oklch(0.12 0.04 258);
+  --sidebar-accent: oklch(0.28 0.05 258);
+  --sidebar-accent-foreground: oklch(0.96 0.01 245);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.66 0.19 248);
+
+  --gradient-primary: linear-gradient(135deg, oklch(0.55 0.19 251), oklch(0.68 0.17 245));
+  --gradient-metallic: linear-gradient(
+    135deg,
+    oklch(0.25 0.04 255),
+    oklch(0.30 0.06 252),
+    oklch(0.25 0.04 255)
+  );
+  --shadow-neu: 6px 6px 16px oklch(0.10 0.03 258 / 0.7), -6px -6px 16px oklch(0.28 0.05 255 / 0.4);
+  --shadow-neu-sm: 3px 3px 8px oklch(0.10 0.03 258 / 0.7), -3px -3px 8px oklch(0.28 0.05 255 / 0.4);
+  --shadow-neu-inset:
+    inset 3px 3px 6px oklch(0.10 0.03 258 / 0.7), inset -3px -3px 6px oklch(0.28 0.05 255 / 0.4);
+  --shadow-elegant: 0 10px 30px -10px oklch(0.66 0.19 248 / 0.45);
 }
 
 @layer base {

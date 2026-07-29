@@ -75,7 +75,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
           "BUCICI — POS multi-tenant, manajemen stok, studio pemasaran AI, dan hitung modal cerdas untuk UMKM.",
       },
       { name: "author", content: "BUCICI" },
-      { name: "theme-color", content: "#1e3a8a" },
+      { name: "theme-color", content: "#1874D2" },
       // PWA fullscreen on Android/iOS home-screen launch
       { name: "mobile-web-app-capable", content: "yes" },
       { name: "apple-mobile-web-app-capable", content: "yes" },
@@ -98,21 +98,18 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       },
       {
         property: "og:image",
-        content:
-          "https://storage.googleapis.com/gpt-engineer-file-uploads/attachments/og-images/73d7db69-8118-4f29-b70b-fa79c31880d8",
+        content: "https://hercules-cdn.com/file_Uw5ine2fPJXmSHuofuu4QS0c",
       },
       {
         name: "twitter:image",
-        content:
-          "https://storage.googleapis.com/gpt-engineer-file-uploads/attachments/og-images/73d7db69-8118-4f29-b70b-fa79c31880d8",
+        content: "https://hercules-cdn.com/file_Uw5ine2fPJXmSHuofuu4QS0c",
       },
     ],
     links: [
       { rel: "stylesheet", href: appCss },
       { rel: "manifest", href: "/manifest.webmanifest" },
-      { rel: "icon", type: "image/png", sizes: "32x32", href: "/favicon-32.png" },
-      { rel: "icon", type: "image/png", sizes: "192x192", href: "/icon-192.png" },
-      { rel: "apple-touch-icon", sizes: "180x180", href: "/apple-touch-icon.png" },
+      { rel: "icon", type: "image/png", sizes: "192x192", href: "https://hercules-cdn.com/file_XLZTx2Sp97CGAkNXkVNXQqZk" },
+      { rel: "apple-touch-icon", sizes: "180x180", href: "https://hercules-cdn.com/file_XLZTx2Sp97CGAkNXkVNXQqZk" },
     ],
   }),
   shellComponent: RootShell,
