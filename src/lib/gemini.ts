@@ -3,12 +3,11 @@
 //
 // Key format:
 //   AQ.Ab... → newer AI Studio key, sent via x-goog-api-key header
-//   AIzaSy... → classic API key, sent via ?key= query param
+//   AIzaSy... → classic API key, sent as ?key= query param
 import { currentUser } from "@/lib/store";
 
 const BASE = "https://generativelanguage.googleapis.com/v1beta/models";
 const TEXT_MODEL = "gemini-2.0-flash";
-const GEMINI_IMAGE_MODEL = "gemini-2.0-flash";
 const IMAGEN_MODEL = "imagen-3.0-generate-002";
 
 export function getGeminiKey(): string | undefined {
@@ -54,6 +53,57 @@ export async function askGemini(prompt: string, system?: string): Promise<string
   return text || "(kosong)";
 }
 
+/**
+ * Analyze a product image and return a detailed visual description in English.
+ * Uses Gemini Flash text (multimodal) which is FREE (~1500 req/day, no billing needed).
+ * The description is then used as a Pollinations prompt for accurate image generation.
+ */
+export async function analyzeProductImage(imageDataUrl: string): Promise<string> {
+  const key = getGeminiKey();
+  if (!key) throw new Error("API Key Gemini belum diatur.");
+
+  const match = imageDataUrl.match(/^data:([^;]+);base64,(.+)$/);
+  if (!match) throw new Error("Format gambar tidak valid.");
+  const [, mimeType, base64Data] = match;
+
+  const prompt = `Analyze this product photo and describe it in detail for use as an AI image generation prompt.
+Focus on: exact product appearance, colors, textures, shapes, materials, presentation style, background elements.
+Be precise and descriptive. Write in English. 2-3 sentences maximum. Do NOT mention brand names.
+Example output: "Crispy golden-brown chicken skin skewers on bamboo sticks, glistening with oil, arranged on a white ceramic plate with a light background."`;
+
+  const body = {
+    contents: [
+      {
+        role: "user",
+        parts: [
+          { inline_data: { mime_type: mimeType, data: base64Data } },
+          { text: prompt },
+        ],
+      },
+    ],
+  };
+
+  const { url, headers } = buildRequest(`${BASE}/${TEXT_MODEL}:generateContent`, key);
+  const res = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    const status = res.status;
+    if (status === 401) throw new Error("API Key tidak valid. Pastikan key sudah benar di Pengaturan.");
+    if (status === 429) throw new Error("Kuota API Key habis. Coba lagi beberapa saat.");
+    throw new Error(`Gemini analyze error (${status}): ${errText.slice(0, 200)}`);
+  }
+
+  const data = await res.json();
+  const text =
+    data?.candidates?.[0]?.content?.parts
+      ?.map((p: { text?: string }) => p.text ?? "")
+      .join("") ?? "";
+
+  if (!text) throw new Error("Gemini tidak dapat membaca foto produk. Coba foto yang lebih jelas.");
+  return text.trim();
+}
+
 export interface PosterOptions {
   imageDataUrl: string;
   title: string;
@@ -67,88 +117,59 @@ export interface PosterOptions {
   customPrompt?: string;
 }
 
-function buildPosterPrompt(opts: PosterOptions): string {
+/**
+ * Build Pollinations FLUX prompt using Gemini's visual description as the product context.
+ */
+export function buildPollinationsPrompt(productDescription: string, opts: PosterOptions): string {
   return [
-    `Create a professional advertising poster for a ${opts.productLabel} business.`,
+    `Professional advertising poster for a ${opts.productLabel} business.`,
+    `Featured product: ${productDescription}`,
     `Visual style: ${opts.styleDescription}.`,
-    `Aspect ratio target: ${opts.ratio}.`,
-    opts.title ? `Large headline text on the poster: "${opts.title}".` : "",
-    opts.tagline ? `Supporting tagline below headline: "${opts.tagline}".` : "",
-    opts.cta ? `Prominent call-to-action text: "${opts.cta}".` : "",
-    opts.contact ? `Contact or promo info at the bottom: "${opts.contact}".` : "",
-    opts.customPrompt ? `Extra instructions: ${opts.customPrompt}.` : "",
-    "Make it look premium, ready for social media. Include text overlays with the provided copy.",
-  ]
-    .filter(Boolean)
-    .join(" ");
-}
-
-async function tryGeminiImageModel(key: string, opts: PosterOptions): Promise<string> {
-  const match = opts.imageDataUrl.match(/^data:([^;]+);base64,(.+)$/);
-  if (!match) throw new Error("Format gambar tidak valid.");
-  const [, mimeType, base64Data] = match;
-
-  const body = {
-    contents: [
-      {
-        role: "user",
-        parts: [
-          { inline_data: { mime_type: mimeType, data: base64Data } },
-          { text: buildPosterPrompt(opts) },
-        ],
-      },
-    ],
-    generationConfig: { responseModalities: ["IMAGE", "TEXT"] },
-  };
-
-  const { url, headers } = buildRequest(`${BASE}/${GEMINI_IMAGE_MODEL}:generateContent`, key);
-  const res = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
-
-  if (!res.ok) {
-    const errText = await res.text();
-    const err = new Error(`status:${res.status}:${errText.slice(0, 200)}`) as Error & { status: number };
-    err.status = res.status;
-    throw err;
-  }
-
-  const data = await res.json();
-  const parts: Array<{ text?: string; inline_data?: { mime_type: string; data: string } }> =
-    data?.candidates?.[0]?.content?.parts ?? [];
-
-  const imagePart = parts.find((p) => p.inline_data?.data);
-  if (!imagePart?.inline_data) {
-    const textMsg = parts.filter((p) => p.text).map((p) => p.text).join(" ");
-    if (
-      textMsg?.toLowerCase().includes("tidak tersedia") ||
-      textMsg?.toLowerCase().includes("not available") ||
-      textMsg?.toLowerCase().includes("cannot generate")
-    ) {
-      const err = new Error(textMsg) as Error & { status: number };
-      err.status = 403;
-      throw err;
-    }
-    const err = new Error(textMsg || "no_image") as Error & { status: number };
-    err.status = 0;
-    throw err;
-  }
-  return `data:${imagePart.inline_data.mime_type};base64,${imagePart.inline_data.data}`;
-}
-
-async function tryImagen3(key: string, opts: PosterOptions): Promise<string> {
-  const prompt = [
-    `Professional advertising poster for a ${opts.productLabel} product.`,
-    `Design style: ${opts.styleDescription}.`,
-    `Aspect ratio: ${opts.ratio}.`,
-    opts.title ? `Headline: "${opts.title}".` : "",
+    opts.title ? `Poster headline text: "${opts.title}".` : "",
     opts.tagline ? `Tagline: "${opts.tagline}".` : "",
-    opts.cta ? `Call-to-action: "${opts.cta}".` : "",
+    opts.cta ? `Call-to-action text: "${opts.cta}".` : "",
     opts.contact ? `Footer info: "${opts.contact}".` : "",
     opts.customPrompt ? opts.customPrompt : "",
-    "High quality, ready for social media, includes text overlays, premium commercial look.",
+    "High quality commercial advertising poster, premium look, ready for social media, includes text overlays.",
   ]
     .filter(Boolean)
     .join(" ");
+}
 
+/**
+ * Generate poster via Pollinations FLUX (free, no key required).
+ */
+async function generateWithPollinations(prompt: string, opts: PosterOptions): Promise<string> {
+  const ratioMap: Record<string, { w: number; h: number }> = {
+    "1:1":  { w: 1024, h: 1024 },
+    "4:5":  { w: 896,  h: 1120 },
+    "9:16": { w: 768,  h: 1365 },
+    "16:9": { w: 1365, h: 768  },
+  };
+  const { w, h } = ratioMap[opts.ratio] ?? { w: 1024, h: 1024 };
+  const seed = Math.floor(Math.random() * 999999);
+  const encoded = encodeURIComponent(prompt);
+  const url = `https://image.pollinations.ai/prompt/${encoded}?width=${w}&height=${h}&seed=${seed}&nologo=true&enhance=true&model=flux`;
+
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Pollinations error (${res.status}). Coba lagi.`);
+
+  const blob = await res.blob();
+  if (!blob.size) throw new Error("Pollinations tidak mengembalikan gambar. Coba lagi.");
+
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+/**
+ * Try Imagen 3 text-to-image (requires billing, kept as last resort).
+ */
+async function tryImagen3(key: string, opts: PosterOptions, productDescription: string): Promise<string> {
+  const prompt = buildPollinationsPrompt(productDescription, opts);
   const body = {
     instances: [{ prompt }],
     parameters: {
@@ -168,22 +189,23 @@ async function tryImagen3(key: string, opts: PosterOptions): Promise<string> {
   if (!res.ok) {
     const errText = await res.text();
     const status = res.status;
-    if (status === 400) throw new Error("Prompt tidak valid. Coba sederhanakan teks atau ubah prompt tambahan.");
     if (status === 403)
-      throw new Error(
-        "API Key tidak memiliki akses ke model image generation. Aktifkan billing di Google Cloud Console untuk mengakses Imagen.",
-      );
+      throw new Error("Imagen 3 membutuhkan billing. Menggunakan Pollinations sebagai fallback.");
     throw new Error(`Imagen error (${status}): ${errText.slice(0, 200)}`);
   }
 
   const data = await res.json();
   const pred = data?.predictions?.[0];
-  if (!pred?.bytesBase64Encoded) {
-    throw new Error("AI tidak mengembalikan gambar. Coba ubah prompt atau ganti foto produk.");
-  }
+  if (!pred?.bytesBase64Encoded) throw new Error("no_image");
   return `data:${pred.mimeType ?? "image/png"};base64,${pred.bytesBase64Encoded}`;
 }
 
+/**
+ * Generate advertising poster — Hybrid approach:
+ * 1. Gemini Flash text (FREE) reads photo → generates accurate visual description
+ * 2. Pollinations FLUX renders poster using that description as prompt
+ * 3. Falls back to Imagen 3 if available (requires billing)
+ */
 export async function generatePosterImage(opts: PosterOptions): Promise<string> {
   const key = getGeminiKey();
   if (!key) {
@@ -192,30 +214,18 @@ export async function generatePosterImage(opts: PosterOptions): Promise<string> 
     );
   }
 
-  // Attempt 1: Gemini 2.0 Flash image-to-image
+  // Step 1: Gemini reads the product photo (text/multimodal, FREE)
+  const productDescription = await analyzeProductImage(opts.imageDataUrl);
+
+  // Step 2: Build accurate prompt using Gemini's description
+  const prompt = buildPollinationsPrompt(productDescription, opts);
+
+  // Step 3: Try Imagen 3 first (higher quality), fall back to Pollinations
   try {
-    return await tryGeminiImageModel(key, opts);
-  } catch (e) {
-    const status = (e as { status?: number }).status;
-    if (status !== 404 && status !== 403 && status !== 0) {
-      const s = status ?? 0;
-      if (s === 400) throw new Error("Format gambar tidak valid. Coba gunakan gambar JPG/PNG yang lebih sederhana.");
-      if (s === 429) throw new Error("Kuota API Key habis. Coba lagi beberapa saat kemudian.");
-      throw e;
-    }
-    console.warn("[gemini] Gemini image model not available (status:", status, "), falling back to Imagen 3");
+    return await tryImagen3(key, opts, productDescription);
+  } catch {
+    // Imagen not available or no billing → use Pollinations (free)
   }
 
-  // Attempt 2: Imagen 3 text-to-image
-  try {
-    return await tryImagen3(key, opts);
-  } catch (e) {
-    const msg = (e as Error).message ?? "";
-    if (msg.includes("tidak memiliki akses") || msg.includes("403")) {
-      throw new Error(
-        "API Key ini belum mendukung image generation. Pastikan format key benar (AIzaSy... atau AQ.Ab...) atau aktifkan billing di Google Cloud Console.",
-      );
-    }
-    throw e;
-  }
+  return await generateWithPollinations(prompt, opts);
 }
