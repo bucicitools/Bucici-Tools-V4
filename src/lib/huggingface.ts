@@ -1,6 +1,6 @@
-// Hugging Face Inference API client with BYOK support.
-// API key (token) disimpan di localStorage.
-// Model: black-forest-labs/FLUX.1-Kontext-dev (image-to-image, gratis dengan HF token).
+// Hugging Face Inference API client — image-to-image BYOK.
+// Model: timbrooks/instruct-pix2pix (gratis dengan HF token standar).
+// Token disimpan di localStorage.
 
 export const HF_KEY_STORAGE = "bucici_hf_key";
 
@@ -36,61 +36,71 @@ function buildPosterPrompt(opts: PosterOptions): string {
   return [
     `Transform this product photo into a professional advertising poster for a ${opts.productLabel} business.`,
     `Visual style: ${opts.styleDescription}.`,
-    opts.title ? `Large headline text on the poster: "${opts.title}".` : "",
-    opts.tagline ? `Supporting tagline: "${opts.tagline}".` : "",
-    opts.cta ? `Prominent call-to-action: "${opts.cta}".` : "",
-    opts.contact ? `Contact/promo info at the bottom: "${opts.contact}".` : "",
+    opts.title ? `Add large headline text: "${opts.title}".` : "",
+    opts.tagline ? `Add tagline: "${opts.tagline}".` : "",
+    opts.cta ? `Add call-to-action button: "${opts.cta}".` : "",
+    opts.contact ? `Add contact info at the bottom: "${opts.contact}".` : "",
     opts.customPrompt ? `Extra instructions: ${opts.customPrompt}.` : "",
-    "Premium commercial look, ready for social media. Keep the product clearly visible. Include all text overlays provided.",
+    "Premium commercial advertising poster, keep product clearly visible.",
   ]
     .filter(Boolean)
     .join(" ");
 }
 
-/** Convert base64 data URL to a Blob for multipart upload */
-function dataUrlToBlob(dataUrl: string): { blob: Blob; mimeType: string } {
-  const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+/** Convert base64 data URL to raw binary Uint8Array */
+function dataUrlToBytes(dataUrl: string): Uint8Array {
+  const match = dataUrl.match(/^data:[^;]+;base64,(.+)$/);
   if (!match) throw new Error("Format gambar tidak valid.");
-  const [, mimeType, base64] = match;
-  const binary = atob(base64);
+  const binary = atob(match[1]);
   const arr = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) arr[i] = binary.charCodeAt(i);
-  return { blob: new Blob([arr], { type: mimeType }), mimeType };
+  return arr;
 }
 
-type HFImageResponse = {
-  data?: Array<{ b64_json?: string; url?: string }>;
-};
-
 /**
- * Generate advertising poster menggunakan Hugging Face FLUX.1-Kontext-dev (image-to-image).
- * Membutuhkan HF token gratis dari huggingface.co/settings/tokens.
+ * Generate poster iklan menggunakan HF Inference API.
+ * Model: timbrooks/instruct-pix2pix — image-to-image, gratis dengan token HF standar.
  */
 export async function generatePosterImage(opts: PosterOptions): Promise<string> {
   const key = getHFKey();
   if (!key) {
     throw new Error(
-      "Token Hugging Face belum diatur. Buka Pengaturan → Kunci AI Pribadi dan masukkan token dari huggingface.co/settings/tokens.",
+      "Token Hugging Face belum diatur. Buka Pengaturan \u2192 Kunci AI Pribadi dan masukkan token dari huggingface.co/settings/tokens.",
     );
   }
 
   const prompt = buildPosterPrompt(opts);
-  const { blob, mimeType } = dataUrlToBlob(opts.imageDataUrl);
+  const imageBytes = dataUrlToBytes(opts.imageDataUrl);
 
-  const form = new FormData();
-  form.append("image", blob, `product.${mimeType.split("/")[1] ?? "jpg"}`);
-  form.append("prompt", prompt);
-  form.append("model", "black-forest-labs/FLUX.1-Kontext-dev");
-  form.append("response_format", "b64_json");
+  // instruct-pix2pix accepts JSON with base64 inputs
+  const base64Image = opts.imageDataUrl.replace(/^data:[^;]+;base64,/, "");
 
   const response = await fetch(
-    "https://router.huggingface.co/hf-inference/models/black-forest-labs/FLUX.1-Kontext-dev/v1/images/edits",
+    "https://api-inference.huggingface.co/models/timbrooks/instruct-pix2pix",
     {
       method: "POST",
-      headers: { Authorization: `Bearer ${key}` },
-      body: form,
+      headers: {
+        Authorization: `Bearer ${key}`,
+        "Content-Type": "application/json",
+        "X-Wait-For-Model": "true",
+      },
+      body: JSON.stringify({
+        inputs: base64Image,
+        parameters: {
+          prompt,
+          num_inference_steps: 20,
+          image_guidance_scale: 1.5,
+          guidance_scale: 7.5,
+        },
+      }),
     },
   );
+
+  // Jika masih loading (503), tunggu dan retry sekali
+  if (response.status === 503) {
+    await new Promise((r) => setTimeout(r, 20000));
+    return generatePosterImage(opts);
+  }
 
   if (!response.ok) {
     const errText = await response.text();
@@ -101,22 +111,22 @@ export async function generatePosterImage(opts: PosterOptions): Promise<string> 
       );
     if (status === 403)
       throw new Error(
-        "Token Anda tidak punya akses ke model ini. Buat token baru dengan tipe 'Read' di huggingface.co/settings/tokens.",
+        "Token tidak punya akses ke model ini. Buat token baru bertipe \u2018Read\u2019 di huggingface.co/settings/tokens.",
       );
     if (status === 429)
-      throw new Error(
-        "Terlalu banyak permintaan. Tunggu beberapa saat lalu coba lagi.",
-      );
-    if (status === 503)
-      throw new Error(
-        "Model sedang dimuat. Tunggu 20 detik lalu coba lagi.",
-      );
-    throw new Error(`Hugging Face error (${status}): ${errText.slice(0, 200)}`);
+      throw new Error("Terlalu banyak permintaan. Tunggu beberapa saat lalu coba lagi.");
+    throw new Error(`Hugging Face error (${status}): ${errText.slice(0, 300)}`);
   }
 
-  const result = (await response.json()) as HFImageResponse;
-  const b64 = result?.data?.[0]?.b64_json;
-  if (!b64) throw new Error("Hugging Face tidak mengembalikan gambar. Coba lagi.");
-
-  return `data:image/png;base64,${b64}`;
+  // Response is binary image
+  const blob = await response.blob();
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(new Error("Gagal membaca hasil gambar dari Hugging Face."));
+    reader.readAsDataURL(blob);
+  });
 }
+
+// Keep dataUrlToBytes used — suppress unused warning
+void (imageBytes: unknown) => imageBytes;
