@@ -1,6 +1,6 @@
-// Hugging Face poster generation — via server proxy (/api/generate-poster).
-// Menghindari CORS dengan routing request melalui TanStack Start API route.
-// Model: black-forest-labs/FLUX.1-schnell (text-to-image, gratis).
+// Hugging Face Inference API — direct browser call, text-to-image.
+// Model: black-forest-labs/FLUX.1-schnell (gratis, HF mendukung CORS untuk model ini).
+// Token disimpan di localStorage.
 
 export const HF_KEY_STORAGE = "bucici_hf_key";
 
@@ -83,8 +83,8 @@ function buildPrompt(opts: PosterOptions, dominantColor: string): string {
 }
 
 /**
- * Generate poster iklan melalui server proxy (menghindari CORS).
- * Foto produk dianalisis warnanya, lalu FLUX.1-schnell generate poster berkualitas tinggi.
+ * Generate poster iklan langsung dari browser ke HF API.
+ * HF mendukung CORS untuk FLUX.1-schnell dengan request JSON sederhana.
  */
 export async function generatePosterImage(opts: PosterOptions): Promise<string> {
   const key = getHFKey();
@@ -100,25 +100,51 @@ export async function generatePosterImage(opts: PosterOptions): Promise<string> 
 
   const prompt = buildPrompt(opts, dominantColor);
 
-  const response = await fetch("/api/generate-poster", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt, hfKey: key }),
-  });
+  const doRequest = async (retried = false): Promise<string> => {
+    const response = await fetch(
+      "https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${key}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          inputs: prompt,
+          parameters: { num_inference_steps: 4 },
+        }),
+      },
+    );
 
-  // Model loading — retry sekali setelah delay
-  if (response.status === 503) {
-    await new Promise<void>((r) => setTimeout(r, 22000));
-    return generatePosterImage(opts);
-  }
+    // Model masih loading — tunggu dan retry sekali
+    if (response.status === 503 && !retried) {
+      await new Promise<void>((r) => setTimeout(r, 20000));
+      return doRequest(true);
+    }
 
-  const data = (await response.json()) as { image?: string; error?: string; retry?: boolean };
+    if (!response.ok) {
+      const errText = await response.text();
+      const status = response.status;
+      if (status === 401)
+        throw new Error("Token Hugging Face tidak valid. Cek kembali token di huggingface.co/settings/tokens.");
+      if (status === 403)
+        throw new Error("Token tidak punya akses. Buat token baru bertipe Read di huggingface.co/settings/tokens.");
+      if (status === 429)
+        throw new Error("Terlalu banyak permintaan. Tunggu sebentar lalu coba lagi.");
+      if (status === 503)
+        throw new Error("Model sedang sangat sibuk. Tunggu 30 detik lalu coba lagi.");
+      throw new Error(`Hugging Face error (${status}): ${errText.slice(0, 200)}`);
+    }
 
-  if (!response.ok || data.error) {
-    throw new Error(data.error ?? "Terjadi kesalahan. Coba lagi.");
-  }
+    // Response adalah binary image
+    const blob = await response.blob();
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = () => reject(new Error("Gagal membaca hasil gambar."));
+      reader.readAsDataURL(blob);
+    });
+  };
 
-  if (!data.image) throw new Error("Tidak ada gambar yang dikembalikan. Coba lagi.");
-
-  return data.image;
+  return doRequest();
 }
