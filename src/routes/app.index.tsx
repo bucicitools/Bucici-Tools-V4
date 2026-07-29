@@ -16,6 +16,9 @@ import {
   isRoomLocked,
   hasPermission,
   getFirstAllowedRoute,
+  useDB,
+  DEFAULT_ROOM_LOCKS,
+  type RoomLock,
 } from "@/lib/store";
 
 export const Route = createFileRoute("/app/")({
@@ -73,6 +76,8 @@ const TOOLS = [
   },
 ] as const;
 
+type RoomLockWithHidden = RoomLock & { hidden?: boolean };
+
 function greeting() {
   const h = new Date().getHours();
   if (h < 11) return "Pagi";
@@ -86,6 +91,11 @@ function TenantHome() {
   const t = currentTenant();
   const isMember = me?.role === "member";
   const isSuperAdmin = me?.role === "super_admin";
+
+  // Baca roomLocks untuk cek hidden
+  const roomLocks = useDB((d) =>
+    (d.roomLocks || DEFAULT_ROOM_LOCKS) as RoomLockWithHidden[],
+  );
 
   if (isMember) {
     const target = getFirstAllowedRoute(me);
@@ -107,7 +117,7 @@ function TenantHome() {
           Selamat {greeting()}, <span className="text-primary">{me?.name}</span>
         </h1>
         <p className="text-sm text-muted-foreground">
-          {t?.businessName ?? "Toko Anda"} ·{" "}
+          {t?.businessName ?? "Toko Anda"} &middot;{" "}
           {isMember ? "Anggota Tim" : me?.role === "owner" ? "Owner Toko" : "Super Admin"}
         </p>
       </div>
@@ -119,6 +129,14 @@ function TenantHome() {
           const lockInfo = !isSuperAdmin ? isRoomLocked(tool.to) : { locked: false, note: "" };
 
           if (!allowed) return null;
+
+          // Sembunyikan card jika super admin set hidden (hanya berlaku untuk non-super-admin)
+          if (!isSuperAdmin) {
+            const roomLock = roomLocks.find(
+              (l) => l.key === tool.to || tool.to.startsWith(l.key),
+            );
+            if (roomLock?.hidden) return null;
+          }
 
           if (lockInfo.locked) {
             return (
@@ -158,7 +176,7 @@ function TenantHome() {
               <h3 className="mt-4 text-lg font-bold">{tool.label}</h3>
               <p className="mt-1 text-sm text-muted-foreground">{tool.desc}</p>
               <span className="mt-4 inline-block text-xs font-semibold text-primary-glow group-hover:underline">
-                Buka →
+                Buka &rarr;
               </span>
             </Link>
           );
