@@ -1,42 +1,10 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useState, useEffect } from "react";
-import { Upload, Download, Loader2, Sparkles, ImageIcon, AlertCircle, KeyRound } from "lucide-react";
+import { useState } from "react";
+import { Loader2, Sparkles, AlertCircle, Copy, Check, Wand2, FileText } from "lucide-react";
 import { toast } from "sonner";
-import { getGeminiKey, generatePosterImage } from "@/lib/gemini";
+import { getGeminiKey, askGemini } from "@/lib/gemini";
 
-export const Route = createFileRoute("/app/pemasaran")({ component: Pemasaran });
-
-// ─── Kuota harian ────────────────────────────────────────────────────────────
-const QUOTA_KEY = "bucici_poster_quota";
-const DAILY_LIMIT = 10;
-
-interface QuotaRecord {
-  date: string;
-  count: number;
-}
-
-function getTodayStr(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-
-function getQuota(): QuotaRecord {
-  try {
-    const raw = localStorage.getItem(QUOTA_KEY);
-    if (!raw) return { date: getTodayStr(), count: 0 };
-    const rec = JSON.parse(raw) as QuotaRecord;
-    if (rec.date !== getTodayStr()) return { date: getTodayStr(), count: 0 };
-    return rec;
-  } catch {
-    return { date: getTodayStr(), count: 0 };
-  }
-}
-
-function incrementQuota(): number {
-  const rec = getQuota();
-  const next = { date: getTodayStr(), count: rec.count + 1 };
-  localStorage.setItem(QUOTA_KEY, JSON.stringify(next));
-  return next.count;
-}
+export const Route = createFileRoute("/app/pemasaran")({ component: RuangKreatif });
 
 // ─── Konstanta ───────────────────────────────────────────────────────────────
 
@@ -51,156 +19,128 @@ const PRODUCT_TYPES = [
 ];
 
 const STYLES = [
-  { k: "fresh",       label: "Fresh Style",         desc: "fresh clean minimal aesthetic, soft daylight, bright whites and mint accents" },
-  { k: "bold",        label: "Bold Style",           desc: "bold high-contrast commercial style, saturated primary colors, thick sans-serif typography" },
-  { k: "hot",         label: "Hot Style",            desc: "hot red and orange gradient, flame accents, appetizing steam, high energy" },
-  { k: "traditional", label: "Traditional Style",    desc: "traditional Indonesian heritage, batik ornament, warm brown and gold, rustic wood" },
-  { k: "playful",     label: "Playful Style",        desc: "playful pop style, pastel confetti, bubbles, cheerful mood" },
-  { k: "natural",     label: "Natural Photography",  desc: "natural photography editorial, soft studio lighting, shallow depth of field" },
-  { k: "youth",       label: "Youth Fun Poster",     desc: "youth gen-z poster, bold color blocks, sticker collage, halftone dots" },
-  { k: "street",      label: "Street Fun Poster",    desc: "urban street style, graffiti spray, neon signage, city night vibe" },
-  { k: "rustic",      label: "Rustic Style",         desc: "rustic artisan, kraft paper background, hand-lettered typography, warm earth tones" },
-  { k: "emoji",       label: "Emoji Style",          desc: "cheerful emoji-based composition, chat-bubble callouts, bright yellow accents" },
-  { k: "splash",      label: "Splash Style",         desc: "dynamic splash of liquid or paint, motion-frozen droplets, dramatic lighting" },
-  { k: "ramadhan",    label: "Ramadhan Style",       desc: "ramadhan festive theme, lantern, crescent moon, deep green and gold, arabesque ornaments" },
-  { k: "lebaran",     label: "Lebaran Style",        desc: "lebaran festive, ketupat, mosque silhouette, warm gold and emerald" },
-  { k: "holiday",     label: "Holiday Style",        desc: "holiday celebration, festive garland, glowing lights, gift accents" },
+  { k: "fresh",       label: "Fresh Style",        desc: "fresh clean minimal aesthetic, soft daylight, bright whites and mint accents" },
+  { k: "bold",        label: "Bold Style",          desc: "bold high-contrast commercial style, saturated primary colors, thick sans-serif typography" },
+  { k: "hot",         label: "Hot Style",           desc: "hot red and orange gradient, flame accents, appetizing steam, high energy" },
+  { k: "traditional", label: "Traditional Style",   desc: "traditional Indonesian heritage, batik ornament, warm brown and gold, rustic wood" },
+  { k: "playful",     label: "Playful Style",       desc: "playful pop style, pastel confetti, bubbles, cheerful mood" },
+  { k: "natural",     label: "Natural Photography", desc: "natural photography editorial, soft studio lighting, shallow depth of field" },
+  { k: "youth",       label: "Youth Fun Poster",    desc: "youth gen-z poster, bold color blocks, sticker collage, halftone dots" },
+  { k: "street",      label: "Street Fun Poster",   desc: "urban street style, graffiti spray, neon signage, city night vibe" },
+  { k: "rustic",      label: "Rustic Style",        desc: "rustic artisan, kraft paper background, hand-lettered typography, warm earth tones" },
+  { k: "emoji",       label: "Emoji Style",         desc: "cheerful emoji-based composition, chat-bubble callouts, bright yellow accents" },
+  { k: "splash",      label: "Splash Style",        desc: "dynamic splash of liquid or paint, motion-frozen droplets, dramatic lighting" },
+  { k: "ramadhan",    label: "Ramadhan Style",      desc: "ramadhan festive theme, lantern, crescent moon, deep green and gold, arabesque ornaments" },
+  { k: "lebaran",     label: "Lebaran Style",       desc: "lebaran festive, ketupat, mosque silhouette, warm gold and emerald" },
+  { k: "holiday",     label: "Holiday Style",       desc: "holiday celebration, festive garland, glowing lights, gift accents" },
 ];
 
 const RATIOS = [
-  { k: "1:1",  label: "Square 1:1 (IG/Marketplace)" },
-  { k: "4:5",  label: "Portrait 4:5 (IG Feed)" },
-  { k: "9:16", label: "Story/Reels 9:16" },
-  { k: "16:9", label: "Landscape 16:9" },
-];
-
-const LOADING_STEPS = [
-  "Mengirim foto produk ke Gemini AI...",
-  "AI membaca & memahami produk...",
-  "Menerapkan style desain...",
-  "Merender poster iklan...",
-  "Finishing touches...",
+  { k: "1:1",  label: "Square 1:1 (1080×1080px)",      px: "1080x1080 pixels" },
+  { k: "4:5",  label: "Portrait 4:5 (1080×1350px)",    px: "1080x1350 pixels" },
+  { k: "9:16", label: "Story/Reels 9:16 (1080×1920px)", px: "1080x1920 pixels" },
+  { k: "16:9", label: "Landscape 16:9 (1200×675px)",    px: "1200x675 pixels" },
 ];
 
 // ─── Komponen utama ──────────────────────────────────────────────────────────
 
-function Pemasaran() {
-  const [img, setImg]           = useState<string | null>(null);
-  const [imgName, setImgName]   = useState("");
+function RuangKreatif() {
   const [productType, setProductType] = useState(PRODUCT_TYPES[0].k);
-  const [styleKey, setStyleKey] = useState(STYLES[0].k);
-  const [title, setTitle]       = useState("");
-  const [tagline, setTagline]   = useState("");
-  const [cta, setCta]           = useState("Pesan Sekarang!");
-  const [extra, setExtra]       = useState("");
-  const [customPrompt, setCustomPrompt] = useState("");
-  const [ratio, setRatio]       = useState(RATIOS[0].k);
-  const [loading, setLoading]   = useState(false);
-  const [stepIdx, setStepIdx]   = useState(0);
-  const [result, setResult]     = useState<string | null>(null);
-  const [quotaUsed, setQuotaUsed] = useState(0);
+  const [styleKey, setStyleKey]       = useState(STYLES[0].k);
+  const [ratio, setRatio]             = useState(RATIOS[0].k);
+  const [title, setTitle]             = useState("");
+  const [tagline, setTagline]         = useState("");
+  const [price, setPrice]             = useState("");
+  const [cta, setCta]                 = useState("Pesan Sekarang!");
+  const [contact, setContact]         = useState("");
 
-  useEffect(() => {
-    setQuotaUsed(getQuota().count);
-  }, []);
+  const [loading, setLoading]         = useState(false);
+  const [imagePrompt, setImagePrompt] = useState("");
+  const [caption, setCaption]         = useState("");
+  const [copiedImg, setCopiedImg]     = useState(false);
+  const [copiedCap, setCopiedCap]     = useState(false);
 
-  const hasKey     = !!getGeminiKey();
-  const quotaLeft  = Math.max(0, DAILY_LIMIT - quotaUsed);
-  const styleDef   = STYLES.find((s) => s.k === styleKey)!;
+  const hasKey       = !!getGeminiKey();
+  const styleDef     = STYLES.find((s) => s.k === styleKey)!;
+  const ratioDef     = RATIOS.find((r) => r.k === ratio)!;
   const productLabel = PRODUCT_TYPES.find((p) => p.k === productType)!.label;
-
-  function upload(e: React.ChangeEvent<HTMLInputElement>) {
-    const f = e.target.files?.[0];
-    if (!f) return;
-    setImgName(f.name);
-    const reader = new FileReader();
-    reader.onload = () => {
-      const orig = reader.result as string;
-      const image = new Image();
-      image.onload = () => {
-        const MAX = 1024;
-        let { width, height } = image;
-        if (width > MAX || height > MAX) {
-          if (width > height) { height = Math.round((height * MAX) / width); width = MAX; }
-          else { width = Math.round((width * MAX) / height); height = MAX; }
-        }
-        const canvas = document.createElement("canvas");
-        canvas.width = width; canvas.height = height;
-        canvas.getContext("2d")!.drawImage(image, 0, 0, width, height);
-        setImg(canvas.toDataURL("image/jpeg", 0.85));
-      };
-      image.src = orig;
-    };
-    reader.readAsDataURL(f);
-  }
+  const canGenerate  = hasKey && !!title.trim() && !loading;
 
   async function generate() {
-    if (!img) { toast.error("Upload foto produk terlebih dahulu."); return; }
-    if (!hasKey) {
-      toast.error("Masukkan Gemini API Key di Pengaturan → Kunci AI Pribadi.");
-      return;
-    }
-    if (quotaLeft <= 0) {
-      toast.error(`Kuota harian habis (${DAILY_LIMIT}×/hari). Coba lagi besok.`);
-      return;
-    }
+    if (!title.trim()) { toast.error("Isi Judul/Nama Produk terlebih dahulu."); return; }
+    if (!hasKey) { toast.error("Masukkan Gemini API Key di Pengaturan → Kunci AI Pribadi."); return; }
 
-    setLoading(true); setResult(null); setStepIdx(0);
-    let idx = 0;
-    const iv = setInterval(() => {
-      idx = Math.min(idx + 1, LOADING_STEPS.length - 1);
-      setStepIdx(idx);
-    }, 4000);
+    setLoading(true);
+    setImagePrompt("");
+    setCaption("");
+
+    const systemPrompt = `You are a professional advertising creative director and copywriter specializing in Indonesian SME (UMKM) marketing. Generate exactly two outputs in the specified format. Be precise, creative, and commercially effective.`;
+
+    const userPrompt = `Generate marketing content for an Indonesian UMKM business with these details:
+- Business type: ${productLabel}
+- Product/Service name: ${title}
+- Tagline/Advantages: ${tagline || "(none)"}
+- Price: ${price || "(not specified)"}
+- Call to Action: ${cta}
+- Contact/Info: ${contact || "(none)"}
+- Visual Style: ${styleDef.label} — ${styleDef.desc}
+- Poster Dimensions: ${ratioDef.px} (${ratio} ratio)
+
+Generate EXACTLY this format with these two sections:
+
+===IMAGE_PROMPT===
+Write a detailed image-generation prompt in English (for use with Gemini, ChatGPT, or Midjourney image tools). The prompt must:
+1. Start with "Transform the uploaded product photo into a professional advertising poster"
+2. Specify the exact visual style: ${styleDef.desc}
+3. Include text overlay instructions with the headline "${title}"${tagline ? `, tagline "${tagline}"` : ""}${price ? `, price "${price}"` : ""}, and CTA "${cta}"
+4. Specify canvas size: ${ratioDef.px}
+5. End with quality instructions: "premium commercial quality, sharp text, vibrant colors, ready for social media"
+Keep it under 200 words.
+
+===CAPTION===
+Write an Instagram/WhatsApp caption in Bahasa Indonesia that:
+1. Opens with an attention-grabbing hook (no generic "Hai!")
+2. Highlights key product benefits (2-3 points with emoji)
+3. Includes the price if provided
+4. Ends with the CTA and contact info
+5. Uses relevant hashtags (5-7 tags)
+Keep it under 150 words, conversational, and relatable for Indonesian audience.`;
 
     try {
-      const dataUrl = await generatePosterImage({
-        imageDataUrl: img, title, tagline, cta, contact: extra,
-        styleLabel: styleDef.label, styleDescription: styleDef.desc,
-        productLabel, ratio, customPrompt,
-      });
-      const newCount = incrementQuota();
-      setQuotaUsed(newCount);
-      setResult(dataUrl);
-      toast.success("Poster berhasil dibuat!");
+      const raw = await askGemini(userPrompt, systemPrompt);
+
+      const imgMatch = raw.match(/===IMAGE_PROMPT===\s*([\s\S]*?)(?:===CAPTION===|$)/);
+      const capMatch = raw.match(/===CAPTION===\s*([\s\S]*?)$/);
+
+      setImagePrompt(imgMatch?.[1]?.trim() ?? raw);
+      setCaption(capMatch?.[1]?.trim() ?? "");
+      toast.success("Prompt & caption berhasil dibuat!");
     } catch (e) {
       toast.error((e as Error).message);
     } finally {
-      clearInterval(iv); setLoading(false); setStepIdx(0);
+      setLoading(false);
     }
   }
 
-  function downloadResult() {
-    if (!result) return;
-    const a = document.createElement("a");
-    a.href = result;
-    a.download = `bucici-poster-${Date.now()}.png`;
-    a.click();
+  function copyText(text: string, type: "img" | "cap") {
+    navigator.clipboard.writeText(text).then(() => {
+      if (type === "img") { setCopiedImg(true); setTimeout(() => setCopiedImg(false), 2000); }
+      else { setCopiedCap(true); setTimeout(() => setCopiedCap(false), 2000); }
+      toast.success("Disalin ke clipboard!");
+    });
   }
 
-  const canGenerate = hasKey && quotaLeft > 0 && !!img && !loading;
-
   return (
-    <div className="min-h-screen -m-4 sm:-m-6 p-4 sm:p-6 bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white rounded-3xl">
+    <div className="min-h-screen -m-4 sm:-m-6 p-4 sm:p-6 bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 text-white rounded-3xl">
+
       {/* Header */}
-      <div className="mb-4 flex flex-wrap items-start justify-between gap-2">
-        <div>
-          <h1 className="text-xl sm:text-2xl font-bold flex items-center gap-2">
-            <Sparkles className="text-purple-400" /> Studio Poster AI
-          </h1>
-          <p className="text-xs sm:text-sm text-slate-400 mt-0.5">
-            Upload foto produk → Gemini AI ubah jadi poster iklan profesional
-          </p>
-        </div>
-        {hasKey && (
-          <div className={`rounded-xl px-3 py-1.5 text-xs font-semibold flex items-center gap-1.5 ${
-            quotaLeft > 3 ? "bg-emerald-500/20 text-emerald-300"
-            : quotaLeft > 0 ? "bg-amber-500/20 text-amber-300"
-            : "bg-red-500/20 text-red-300"
-          }`}>
-            <Sparkles size={12} />
-            {quotaLeft > 0 ? `Kuota: ${quotaLeft}/${DAILY_LIMIT} hari ini` : "Kuota habis — reset besok"}
-          </div>
-        )}
+      <div className="mb-5">
+        <h1 className="text-xl sm:text-2xl font-bold flex items-center gap-2">
+          <Wand2 className="text-purple-400" /> Ruang Kreatif
+        </h1>
+        <p className="text-xs sm:text-sm text-slate-400 mt-0.5">
+          Buat Prompt Iklan Profesional untuk Gemini, ChatGPT & Midjourney — plus caption siap upload
+        </p>
       </div>
 
       {/* Banner belum ada key */}
@@ -217,41 +157,49 @@ function Pemasaran() {
               lalu tempel key dari{" "}
               <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer" className="underline text-amber-300">
                 aistudio.google.com/apikey
-              </a>
-              {" "}(gratis, tanpa billing).
+              </a>{" "}
+              (gratis).
             </p>
           </div>
         </div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-[360px_1fr] gap-4">
-        {/* Panel kiri */}
+      {/* Panduan cara pakai */}
+      <div className="mb-4 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 p-4">
+        <p className="text-xs font-semibold text-indigo-300 uppercase tracking-wide mb-2">Cara Pakai</p>
+        <div className="flex flex-col sm:flex-row gap-3 text-xs text-slate-300">
+          {[
+            { n: "1", t: "Isi form di bawah, lalu klik Generate" },
+            { n: "2", t: "Salin Master Prompt yang dihasilkan" },
+            { n: "3", t: "Upload foto produk + paste prompt ke Gemini / ChatGPT / Midjourney" },
+          ].map((s) => (
+            <div key={s.n} className="flex items-start gap-2 flex-1">
+              <span className="w-5 h-5 rounded-full bg-indigo-500/40 text-indigo-200 flex items-center justify-center text-[10px] font-bold shrink-0 mt-0.5">{s.n}</span>
+              <span>{s.t}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-[380px_1fr] gap-4">
+
+        {/* Panel kiri — Form */}
         <div className="space-y-3">
-          <div className="rounded-2xl bg-white/5 border border-white/10 p-4 space-y-2">
-            <p className="text-xs font-semibold text-slate-300 uppercase tracking-wide">Foto Produk</p>
-            <label className="block cursor-pointer">
-              <div className="flex items-center gap-2 rounded-lg bg-white/10 px-3 py-2 hover:bg-white/20 text-sm transition">
-                <Upload size={14} />
-                {img ? `Ganti foto (${imgName || "uploaded"})` : "Upload Foto Produk"}
-              </div>
-              <input type="file" accept="image/*" onChange={upload} className="hidden" />
-            </label>
-            {img && <img src={img} alt="Preview" className="rounded-lg h-28 w-full object-cover border border-white/10" />}
-          </div>
 
           <div className="rounded-2xl bg-white/5 border border-white/10 p-4 space-y-3">
             <p className="text-xs font-semibold text-slate-300 uppercase tracking-wide">Kategori & Gaya</p>
-            <F l="Jenis Bisnis">
+            <F l="Jenis Usaha">
               <select value={productType} onChange={(e) => setProductType(e.target.value)} className="inp">
                 {PRODUCT_TYPES.map((p) => <option key={p.k} value={p.k} className="text-black">{p.label}</option>)}
               </select>
             </F>
-            <F l="Style Desain">
+            <F l="Gaya Visual / Style">
               <select value={styleKey} onChange={(e) => setStyleKey(e.target.value)} className="inp">
                 {STYLES.map((s) => <option key={s.k} value={s.k} className="text-black">{s.label}</option>)}
               </select>
+              <p className="text-[10px] text-indigo-300 mt-1 italic">{styleDef.desc}</p>
             </F>
-            <F l="Rasio">
+            <F l="Rasio / Ukuran Poster">
               <select value={ratio} onChange={(e) => setRatio(e.target.value)} className="inp">
                 {RATIOS.map((r) => <option key={r.k} value={r.k} className="text-black">{r.label}</option>)}
               </select>
@@ -259,83 +207,111 @@ function Pemasaran() {
           </div>
 
           <div className="rounded-2xl bg-white/5 border border-white/10 p-4 space-y-3">
-            <p className="text-xs font-semibold text-slate-300 uppercase tracking-wide">Teks Poster</p>
-            <F l="Judul / Nama Produk"><input value={title} onChange={(e) => setTitle(e.target.value)} className="inp" placeholder="Misal: Sate Kulit Kriuk" /></F>
-            <F l="Tagline"><input value={tagline} onChange={(e) => setTagline(e.target.value)} className="inp" placeholder="Kalimat pemikat singkat" /></F>
-            <F l="Call to Action"><input value={cta} onChange={(e) => setCta(e.target.value)} className="inp" /></F>
-            <F l="Kontak / Info Tambahan"><input value={extra} onChange={(e) => setExtra(e.target.value)} className="inp" placeholder="No. WA, alamat, promo, dll" /></F>
-            <F l="Prompt Tambahan (opsional)">
-              <textarea value={customPrompt} onChange={(e) => setCustomPrompt(e.target.value)}
-                className="inp min-h-[60px] resize-none"
-                placeholder="Contoh: tambahkan bendera merah putih di sudut kanan" />
+            <p className="text-xs font-semibold text-slate-300 uppercase tracking-wide">Info Produk</p>
+            <F l="Judul / Nama Produk *">
+              <input value={title} onChange={(e) => setTitle(e.target.value)} className="inp" placeholder="Misal: Sate Kulit Kriuk" />
+            </F>
+            <F l="Tagline / Keunggulan">
+              <input value={tagline} onChange={(e) => setTagline(e.target.value)} className="inp" placeholder="Kalimat pemikat singkat" />
+            </F>
+            <F l="Harga (opsional)">
+              <input value={price} onChange={(e) => setPrice(e.target.value)} className="inp" placeholder="Misal: Rp 25.000 / porsi" />
+            </F>
+            <F l="Call to Action (CTA)">
+              <input value={cta} onChange={(e) => setCta(e.target.value)} className="inp" />
+            </F>
+            <F l="Kontak / Info Tambahan">
+              <input value={contact} onChange={(e) => setContact(e.target.value)} className="inp" placeholder="No. WA, alamat, promo, dll" />
             </F>
           </div>
 
           <button
             onClick={generate}
             disabled={!canGenerate}
-            className="w-full rounded-xl bg-gradient-to-r from-fuchsia-600 via-purple-600 to-indigo-600 py-3 font-bold flex items-center justify-center gap-2 disabled:opacity-40 transition"
+            className="w-full rounded-xl bg-gradient-to-r from-fuchsia-600 via-purple-600 to-indigo-600 py-3 font-bold flex items-center justify-center gap-2 disabled:opacity-40 transition hover:opacity-90"
           >
             {loading ? <Loader2 className="animate-spin" size={16} /> : <Sparkles size={16} />}
-            {loading ? "AI sedang membuat poster..."
+            {loading ? "AI sedang membuat prompt..."
               : !hasKey ? "Perlu API Key Gemini"
-              : quotaLeft <= 0 ? "Kuota habis hari ini"
-              : "Generate Poster Iklan"}
+              : "Buat Master Prompt Pemasaran"}
           </button>
-
-          {hasKey && (
-            <p className="text-center text-xs text-slate-500">
-              Sisa kuota hari ini:{" "}
-              <span className={quotaLeft > 0 ? "text-emerald-400 font-semibold" : "text-red-400 font-semibold"}>
-                {quotaLeft}
-              </span>/{DAILY_LIMIT}
-            </p>
-          )}
         </div>
 
-        {/* Panel kanan — hasil */}
-        <div className="rounded-2xl bg-white/5 border border-white/10 p-4 min-h-[420px] flex items-center justify-center">
-          {loading ? (
-            <div className="flex flex-col items-center gap-4 text-center px-4">
-              <div className="relative w-16 h-16">
+        {/* Panel kanan — Hasil */}
+        <div className="space-y-3">
+          {!imagePrompt && !loading && (
+            <div className="rounded-2xl bg-white/5 border border-white/10 p-8 flex flex-col items-center justify-center min-h-[300px] text-center gap-3">
+              <FileText className="text-slate-600" size={48} />
+              <p className="text-sm text-slate-500">Hasil prompt & caption akan tampil di sini</p>
+              <p className="text-xs text-slate-600">Isi form di kiri, lalu klik Generate</p>
+            </div>
+          )}
+
+          {loading && (
+            <div className="rounded-2xl bg-white/5 border border-white/10 p-8 flex flex-col items-center justify-center min-h-[300px] gap-4">
+              <div className="relative w-14 h-14">
                 <div className="absolute inset-0 rounded-full border-4 border-purple-500/30 border-t-purple-400 animate-spin" />
-                <Sparkles className="absolute inset-0 m-auto text-purple-300" size={24} />
+                <Sparkles className="absolute inset-0 m-auto text-purple-300" size={20} />
               </div>
-              <div className="text-sm font-semibold text-fuchsia-200">{LOADING_STEPS[stepIdx]}</div>
-              <div className="text-xs text-slate-400">Mohon tunggu sekitar 20–40 detik</div>
-              <div className="flex gap-1">
-                {LOADING_STEPS.map((_, i) => (
-                  <div key={i} className={`h-1 w-6 rounded-full transition-all ${i <= stepIdx ? "bg-purple-400" : "bg-white/10"}`} />
-                ))}
-              </div>
+              <p className="text-sm font-semibold text-fuchsia-200">AI sedang meracik prompt terbaik...</p>
+              <p className="text-xs text-slate-400">Biasanya selesai dalam 5–10 detik</p>
             </div>
-          ) : result ? (
-            <div className="relative w-full">
-              <img src={result} alt="Poster iklan" className="w-full rounded-xl object-contain max-h-[75vh] border border-white/10" />
-              <div className="absolute bottom-3 right-3 flex gap-2">
-                <button onClick={downloadResult} className="rounded-lg bg-black/70 backdrop-blur px-3 py-2 text-xs flex items-center gap-1 hover:bg-black/90 transition">
-                  <Download size={14} /> Download PNG
+          )}
+
+          {imagePrompt && (
+            <div className="rounded-2xl bg-white/5 border border-white/10 p-4 space-y-2">
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-semibold text-purple-300 uppercase tracking-wide flex items-center gap-1.5">
+                  <Wand2 size={12} /> Master Image Prompt
+                </p>
+                <button
+                  onClick={() => copyText(imagePrompt, "img")}
+                  className="flex items-center gap-1.5 rounded-lg bg-purple-500/20 border border-purple-500/30 px-3 py-1.5 text-xs font-semibold text-purple-300 hover:bg-purple-500/30 transition"
+                >
+                  {copiedImg ? <Check size={12} /> : <Copy size={12} />}
+                  {copiedImg ? "Tersalin!" : "Salin Prompt"}
                 </button>
-                <button onClick={generate} disabled={quotaLeft <= 0} className="rounded-lg bg-purple-600/80 backdrop-blur px-3 py-2 text-xs flex items-center gap-1 hover:bg-purple-600 disabled:opacity-40 transition">
-                  <Sparkles size={14} /> Generate Ulang
+              </div>
+              <div className="rounded-xl bg-black/30 border border-white/5 p-3 text-xs text-slate-200 leading-relaxed whitespace-pre-wrap font-mono">
+                {imagePrompt}
+              </div>
+              <p className="text-[10px] text-slate-500">
+                Paste prompt ini + upload foto produk ke Gemini (gemini.google.com), ChatGPT, atau Midjourney.
+              </p>
+            </div>
+          )}
+
+          {caption && (
+            <div className="rounded-2xl bg-white/5 border border-white/10 p-4 space-y-2">
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-semibold text-emerald-300 uppercase tracking-wide flex items-center gap-1.5">
+                  <FileText size={12} /> Caption Media Sosial
+                </p>
+                <button
+                  onClick={() => copyText(caption, "cap")}
+                  className="flex items-center gap-1.5 rounded-lg bg-emerald-500/20 border border-emerald-500/30 px-3 py-1.5 text-xs font-semibold text-emerald-300 hover:bg-emerald-500/30 transition"
+                >
+                  {copiedCap ? <Check size={12} /> : <Copy size={12} />}
+                  {copiedCap ? "Tersalin!" : "Salin Caption"}
                 </button>
               </div>
+              <div className="rounded-xl bg-black/30 border border-white/5 p-3 text-xs text-slate-200 leading-relaxed whitespace-pre-wrap">
+                {caption}
+              </div>
+              <p className="text-[10px] text-slate-500">
+                Siap paste ke caption Instagram, WhatsApp Status, atau TikTok.
+              </p>
             </div>
-          ) : !hasKey ? (
-            <div className="text-center space-y-3 px-6">
-              <KeyRound className="mx-auto text-amber-400" size={40} />
-              <p className="text-sm font-semibold text-amber-300">Perlu Gemini API Key</p>
-              <p className="text-xs text-slate-400">Buka Pengaturan, masukkan key dari aistudio.google.com/apikey (gratis)</p>
-              <Link to="/app/pengaturan" className="inline-block mt-2 rounded-xl bg-amber-500/20 border border-amber-500/40 px-4 py-2 text-xs font-semibold text-amber-300 hover:bg-amber-500/30 transition">
-                Buka Pengaturan →
-              </Link>
-            </div>
-          ) : (
-            <div className="text-center text-slate-500 space-y-3">
-              <ImageIcon className="mx-auto text-slate-600" size={48} />
-              <p className="text-sm">Hasil poster akan tampil di sini</p>
-              <p className="text-xs text-slate-600">Upload foto produk, atur gaya & teks, lalu klik Generate</p>
-            </div>
+          )}
+
+          {imagePrompt && (
+            <button
+              onClick={generate}
+              disabled={loading}
+              className="w-full rounded-xl border border-purple-500/30 text-purple-300 py-2 text-sm font-semibold flex items-center justify-center gap-2 hover:bg-purple-500/10 transition disabled:opacity-40"
+            >
+              <Sparkles size={14} /> Generate Ulang
+            </button>
           )}
         </div>
       </div>
