@@ -1,7 +1,7 @@
 import { createFileRoute, Link, Navigate } from "@tanstack/react-router";
 import {
   ShoppingCart,
-  Megaphone,
+  Wand2,
   Boxes,
   Calculator,
   Info,
@@ -37,9 +37,9 @@ const TOOLS = [
   {
     to: "/app/pemasaran",
     perm: "pemasaran",
-    label: "Ruang Pemasaran",
-    desc: "Studio POSM Hybrid AI — bikin poster dalam detik.",
-    icon: Megaphone,
+    label: "Ruang Kreatif",
+    desc: "Buat prompt iklan & caption media sosial profesional dengan AI.",
+    icon: Wand2,
     tone: "from-fuchsia-500 to-purple-700",
   },
   {
@@ -92,7 +92,6 @@ function TenantHome() {
   const isMember = me?.role === "member";
   const isSuperAdmin = me?.role === "super_admin";
 
-  // Baca roomLocks untuk cek hidden
   const roomLocks = useDB((d) =>
     (d.roomLocks || DEFAULT_ROOM_LOCKS) as RoomLockWithHidden[],
   );
@@ -130,7 +129,6 @@ function TenantHome() {
 
           if (!allowed) return null;
 
-          // Sembunyikan card jika super admin set hidden (hanya berlaku untuk non-super-admin)
           if (!isSuperAdmin) {
             const roomLock = roomLocks.find(
               (l) => l.key === tool.to || tool.to.startsWith(l.key),
