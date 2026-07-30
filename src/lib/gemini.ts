@@ -1,46 +1,87 @@
-// Google Gemini client with BYOK support.
+// Google Gemini client with BYOK + key rotation support.
 //
-// Key storage: localStorage key "bucici_gemini_key" (simple, reliable, no store dependency)
+// Key storage: localStorage keys "bucici_gemini_key_1", "_2", "_3"
 // Key format detection:
 //   AQ.Ab... → x-goog-api-key header
 //   AIzaSy... → ?key= query param
 //
-// Falls back to currentUser().geminiApiKey or VITE_GEMINI_API_KEY for backward compat.
+// Key rotation: if a key hits 429, automatically rotate to the next key.
+
 import { currentUser } from "@/lib/store";
 
 const BASE = "https://generativelanguage.googleapis.com/v1beta/models";
 const TEXT_MODEL = "gemini-2.0-flash";
-// Model image generation terbaru (pengganti gemini-2.0-flash-preview-image-generation yang sudah deprecated Nov 2025)
+// Primary model, fallback to gemini-2.5-flash-image if 404
 const IMAGE_MODEL = "gemini-2.0-flash-exp-image-generation";
-const LS_KEY = "bucici_gemini_key";
+const IMAGE_MODEL_FALLBACK = "gemini-2.5-flash-image";
+
+export const GEMINI_KEY_SLOTS = ["bucici_gemini_key_1", "bucici_gemini_key_2", "bucici_gemini_key_3"] as const;
+// Legacy key (single key, old format)
+const LS_KEY_LEGACY = "bucici_gemini_key";
 
 // ─── Key management ───────────────────────────────────────────────────────────
 
-export function getGeminiKey(): string | undefined {
-  // 1. Direct localStorage (set by saveGeminiKeyLocal)
-  if (typeof window !== "undefined") {
-    const lsKey = localStorage.getItem(LS_KEY);
-    if (lsKey?.trim()) return lsKey.trim();
+/** Get all saved keys as an array (non-empty only) */
+export function getAllGeminiKeys(): string[] {
+  if (typeof window === "undefined") return [];
+  const keys: string[] = [];
+  for (const slot of GEMINI_KEY_SLOTS) {
+    const k = localStorage.getItem(slot)?.trim();
+    if (k) keys.push(k);
   }
-  // 2. Store (legacy hydration path)
-  const me = currentUser();
-  if (me?.geminiApiKey?.trim()) return me.geminiApiKey.trim();
-  // 3. Env var fallback
-  const envKey = import.meta.env.VITE_GEMINI_API_KEY as string | undefined;
-  return envKey?.trim() || undefined;
+  // Legacy single key fallback
+  if (keys.length === 0) {
+    const legacy = localStorage.getItem(LS_KEY_LEGACY)?.trim();
+    if (legacy) keys.push(legacy);
+    // Also check store
+    const me = currentUser();
+    if (!legacy && me?.geminiApiKey?.trim()) keys.push(me.geminiApiKey.trim());
+    // Env var
+    const envKey = import.meta.env.VITE_GEMINI_API_KEY as string | undefined;
+    if (!legacy && !me?.geminiApiKey && envKey?.trim()) keys.push(envKey.trim());
+  }
+  return keys;
 }
 
-/** Save key directly to localStorage — instant, no reload needed */
+/** Get the first available key (for display/check purposes) */
+export function getGeminiKey(): string | undefined {
+  return getAllGeminiKeys()[0];
+}
+
+/** Save a key to a specific slot (1-indexed) */
+export function saveGeminiKeySlot(slot: 1 | 2 | 3, key: string): void {
+  if (typeof window === "undefined") return;
+  const lsKey = `bucici_gemini_key_${slot}`;
+  if (key.trim()) localStorage.setItem(lsKey, key.trim());
+  else localStorage.removeItem(lsKey);
+}
+
+/** Read a key from a specific slot (1-indexed) */
+export function readGeminiKeySlot(slot: 1 | 2 | 3): string {
+  if (typeof window === "undefined") return "";
+  return localStorage.getItem(`bucici_gemini_key_${slot}`) ?? "";
+}
+
+/** Legacy single-key save — also saves to slot 1 */
 export function saveGeminiKeyLocal(key: string): void {
   if (typeof window === "undefined") return;
-  if (key.trim()) localStorage.setItem(LS_KEY, key.trim());
-  else localStorage.removeItem(LS_KEY);
+  if (key.trim()) {
+    localStorage.setItem(LS_KEY_LEGACY, key.trim());
+    localStorage.setItem(GEMINI_KEY_SLOTS[0], key.trim());
+  } else {
+    localStorage.removeItem(LS_KEY_LEGACY);
+    localStorage.removeItem(GEMINI_KEY_SLOTS[0]);
+  }
 }
 
-/** Read key from localStorage (for pre-filling input in settings) */
+/** Legacy single-key read */
 export function readGeminiKeyLocal(): string {
   if (typeof window === "undefined") return "";
-  return localStorage.getItem(LS_KEY) ?? "";
+  return (
+    localStorage.getItem(GEMINI_KEY_SLOTS[0]) ??
+    localStorage.getItem(LS_KEY_LEGACY) ??
+    ""
+  );
 }
 
 // ─── Request builder ──────────────────────────────────────────────────────────
@@ -102,17 +143,16 @@ export interface PosterOptions {
   customPrompt?: string;
 }
 
-// ─── Main entry point ─────────────────────────────────────────────────────────
+// ─── Main entry point with key rotation ──────────────────────────────────────
 
 /**
- * Generate advertising poster via Gemini image generation model directly.
+ * Generate advertising poster via Gemini image generation model.
  * Foto produk asli dikirim ke Gemini → Gemini transform jadi poster profesional.
- * Model: gemini-2.0-flash-exp-image-generation (current, replaces deprecated preview model)
- * Retries once on 429 after 65 seconds.
+ * Key rotation: if one key hits 429, automatically tries the next key.
  */
 export async function generatePosterImage(opts: PosterOptions): Promise<string> {
-  const key = getGeminiKey();
-  if (!key) {
+  const keys = getAllGeminiKeys();
+  if (keys.length === 0) {
     throw new Error(
       "API Key Gemini belum diatur. Buka Pengaturan → Kunci AI Pribadi dan masukkan kunci dari aistudio.google.com/apikey.",
     );
@@ -151,64 +191,71 @@ export async function generatePosterImage(opts: PosterOptions): Promise<string> 
     },
   };
 
-  const { url, headers } = buildRequest(`${BASE}/${IMAGE_MODEL}:generateContent`, key);
-  const init: RequestInit = { method: "POST", headers, body: JSON.stringify(body) };
+  // Try each key in rotation
+  let lastError = "";
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    const keyLabel = keys.length > 1 ? ` (key ${i + 1}/${keys.length})` : "";
 
-  // First attempt
-  let res = await fetch(url, init);
+    // Try primary model
+    let modelToUse = IMAGE_MODEL;
+    let { url, headers } = buildRequest(`${BASE}/${modelToUse}:generateContent`, key);
+    let res = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
 
-  // Auto-retry once on 429 (rate limit) — wait 65s for quota to reset
-  if (res.status === 429) {
-    await sleep(65_000);
-    res = await fetch(url, init);
+    // If primary model 404, try fallback model
+    if (res.status === 404) {
+      modelToUse = IMAGE_MODEL_FALLBACK;
+      ({ url, headers } = buildRequest(`${BASE}/${modelToUse}:generateContent`, key));
+      res = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
+    }
+
+    // 429 on this key → try next key immediately (no long wait)
+    if (res.status === 429) {
+      lastError = `Key ${i + 1} terkena rate limit`;
+      if (i < keys.length - 1) {
+        // Small delay before next key (2 seconds)
+        await sleep(2000);
+        continue;
+      }
+      // All keys exhausted
+      throw new Error(
+        `Semua API key kena rate limit${keyLabel}. Tunggu beberapa menit lalu coba lagi, atau tambah key cadangan di Pengaturan.`,
+      );
+    }
+
+    if (!res.ok) {
+      const errText = await res.text();
+      const status = res.status;
+      if (status === 400)
+        throw new Error("Format gambar atau prompt tidak valid. Coba gambar produk yang lebih jelas.");
+      if (status === 403)
+        throw new Error(
+          `API Key tidak valid atau tidak memiliki akses${keyLabel}. Pastikan key sudah benar di Pengaturan.`,
+        );
+      if (status === 404)
+        throw new Error(
+          "Model image generation tidak tersedia. Coba buat API key baru di aistudio.google.com/apikey.",
+        );
+      throw new Error(`Gemini error (${status}): ${errText.slice(0, 300)}`);
+    }
+
+    const data = await res.json();
+    const parts: Array<{ text?: string; inline_data?: { mime_type: string; data: string } }> =
+      data?.candidates?.[0]?.content?.parts ?? [];
+
+    const imagePart = parts.find((p) => p.inline_data?.data);
+    if (!imagePart?.inline_data) {
+      const textMsg = parts
+        .filter((p) => p.text)
+        .map((p) => p.text)
+        .join(" ");
+      throw new Error(
+        textMsg || "AI tidak mengembalikan gambar. Coba gambar produk yang berbeda atau ubah style.",
+      );
+    }
+
+    return `data:${imagePart.inline_data.mime_type};base64,${imagePart.inline_data.data}`;
   }
 
-  // If exp model also fails with 404, try gemini-2.5-flash-image as final fallback
-  if (res.status === 404) {
-    const fallbackModel = "gemini-2.5-flash-image";
-    const { url: url2, headers: headers2 } = buildRequest(
-      `${BASE}/${fallbackModel}:generateContent`,
-      key,
-    );
-    res = await fetch(url2, { method: "POST", headers: headers2, body: JSON.stringify(body) });
-  }
-
-  if (!res.ok) {
-    const errText = await res.text();
-    const status = res.status;
-    if (status === 400)
-      throw new Error(
-        "Format gambar atau prompt tidak valid. Coba gambar produk yang lebih jelas.",
-      );
-    if (status === 403)
-      throw new Error(
-        "API Key tidak valid atau tidak memiliki akses. Pastikan key sudah benar di Pengaturan.",
-      );
-    if (status === 429)
-      throw new Error(
-        "Rate limit Gemini masih aktif. Tunggu beberapa menit lalu coba lagi, atau coba besok jika kuota harian habis.",
-      );
-    if (status === 404)
-      throw new Error(
-        "Model image generation tidak tersedia untuk key ini. Coba buat API key baru di aistudio.google.com/apikey.",
-      );
-    throw new Error(`Gemini error (${status}): ${errText.slice(0, 300)}`);
-  }
-
-  const data = await res.json();
-  const parts: Array<{ text?: string; inline_data?: { mime_type: string; data: string } }> =
-    data?.candidates?.[0]?.content?.parts ?? [];
-
-  const imagePart = parts.find((p) => p.inline_data?.data);
-  if (!imagePart?.inline_data) {
-    const textMsg = parts
-      .filter((p) => p.text)
-      .map((p) => p.text)
-      .join(" ");
-    throw new Error(
-      textMsg || "AI tidak mengembalikan gambar. Coba gambar produk yang berbeda atau ubah style.",
-    );
-  }
-
-  return `data:${imagePart.inline_data.mime_type};base64,${imagePart.inline_data.data}`;
+  throw new Error(lastError || "Gagal generate poster. Coba lagi.");
 }
