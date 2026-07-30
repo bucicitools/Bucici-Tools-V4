@@ -12,20 +12,26 @@ import {
   Trash2,
   AlertTriangle,
   X,
+  Plus,
 } from "lucide-react";
 import { toast } from "sonner";
 import { currentUser, currentTenant, db } from "@/lib/store";
 import { supabase } from "@/integrations/supabase/client";
-import { saveGeminiKeyLocal, readGeminiKeyLocal } from "@/lib/gemini";
+import { saveGeminiKeySlot, readGeminiKeySlot, getAllGeminiKeys } from "@/lib/gemini";
 
 export const Route = createFileRoute("/app/pengaturan")({ component: Pengaturan });
 
 function Pengaturan() {
   const me = currentUser();
   const tenant = currentTenant();
-  // Read from localStorage directly — most reliable source
-  const [key, setKey] = useState(() => readGeminiKeyLocal() || me?.geminiApiKey || "");
-  const [show, setShow] = useState(false);
+
+  // Key rotation: 3 slots
+  const [keys, setKeys] = useState<[string, string, string]>(() => [
+    readGeminiKeySlot(1),
+    readGeminiKeySlot(2),
+    readGeminiKeySlot(3),
+  ]);
+  const [showKey, setShowKey] = useState<[boolean, boolean, boolean]>([false, false, false]);
   const [savingKey, setSavingKey] = useState(false);
 
   const [oldPassword, setOldPassword] = useState("");
@@ -42,38 +48,59 @@ function Pengaturan() {
   const [loadingReset, setLoadingReset] = useState(false);
   const [resetError, setResetError] = useState("");
 
-  async function saveGeminiKey() {
+  function updateKey(idx: 0 | 1 | 2, val: string) {
+    setKeys((prev) => {
+      const next: [string, string, string] = [...prev] as [string, string, string];
+      next[idx] = val;
+      return next;
+    });
+  }
+
+  function toggleShow(idx: 0 | 1 | 2) {
+    setShowKey((prev) => {
+      const next: [boolean, boolean, boolean] = [...prev] as [boolean, boolean, boolean];
+      next[idx] = !next[idx];
+      return next;
+    });
+  }
+
+  async function saveAllKeys() {
     setSavingKey(true);
     try {
-      const trimmed = key.trim();
+      saveGeminiKeySlot(1, keys[0]);
+      saveGeminiKeySlot(2, keys[1]);
+      saveGeminiKeySlot(3, keys[2]);
 
-      // 1. Save to localStorage immediately (used by getGeminiKey())
-      saveGeminiKeyLocal(trimmed);
-
-      // 2. Also update store (in-memory)
+      // Also update store (in-memory, legacy)
       if (me) {
         db.set((n) => {
           const u = n.users.find((x) => x.id === me.id);
-          if (u) u.geminiApiKey = trimmed || undefined;
+          if (u) u.geminiApiKey = keys[0].trim() || undefined;
         });
       }
 
-      // 3. Always persist to Supabase profiles (clear when empty, set when filled)
-      // This ensures stale keys from previous sessions don't leak back via hydration
+      // Persist primary key to Supabase profiles
       try {
         const { data: authData } = await supabase.auth.getUser();
         const uid = authData?.user?.id;
         if (uid) {
           await supabase
             .from("profiles")
-            .update({ gemini_api_key: trimmed || null })
+            .update({ gemini_api_key: keys[0].trim() || null })
             .eq("id", uid);
         }
       } catch {
-        // Non-fatal: localStorage is the source of truth
+        // Non-fatal
       }
 
-      toast.success(trimmed ? "Kunci Gemini tersimpan! Siap digunakan." : "Kunci Gemini dihapus dari semua perangkat.");
+      const activeCount = keys.filter((k) => k.trim()).length;
+      toast.success(
+        activeCount > 1
+          ? `${activeCount} kunci AI tersimpan! Rotasi otomatis aktif.`
+          : activeCount === 1
+          ? "Kunci AI tersimpan!"
+          : "Semua kunci AI dihapus.",
+      );
     } catch {
       toast.error("Gagal menyimpan kunci. Coba lagi.");
     } finally {
@@ -81,36 +108,29 @@ function Pengaturan() {
     }
   }
 
-  async function clearGeminiKey() {
-    setKey("");
+  async function clearAllKeys() {
+    setKeys(["", "", ""]);
     setSavingKey(true);
     try {
-      // Clear localStorage
-      saveGeminiKeyLocal("");
-
-      // Clear store
+      saveGeminiKeySlot(1, "");
+      saveGeminiKeySlot(2, "");
+      saveGeminiKeySlot(3, "");
       if (me) {
         db.set((n) => {
           const u = n.users.find((x) => x.id === me.id);
           if (u) u.geminiApiKey = undefined;
         });
       }
-
-      // Clear Supabase — critical to prevent stale key from coming back on next login
       try {
         const { data: authData } = await supabase.auth.getUser();
         const uid = authData?.user?.id;
         if (uid) {
-          await supabase
-            .from("profiles")
-            .update({ gemini_api_key: null })
-            .eq("id", uid);
+          await supabase.from("profiles").update({ gemini_api_key: null }).eq("id", uid);
         }
       } catch {
         // Non-fatal
       }
-
-      toast.success("Kunci AI dihapus dari semua perangkat.");
+      toast.success("Semua kunci AI dihapus.");
     } catch {
       toast.error("Gagal menghapus kunci. Coba lagi.");
     } finally {
@@ -196,7 +216,10 @@ function Pengaturan() {
         if (errItems) console.warn("[hapus] transaction_items error (ignored):", errItems.message);
       }
 
-      const { error: errTx } = await supabase.from("transactions").delete().eq("tenant_id", tenant.id);
+      const { error: errTx } = await supabase
+        .from("transactions")
+        .delete()
+        .eq("tenant_id", tenant.id);
       if (errTx) setResetError((prev) => prev + `Transaksi: ${errTx.message}. `);
 
       const { error: errCash } = await supabase.from("cash").delete().eq("tenant_id", tenant.id);
@@ -231,7 +254,7 @@ function Pengaturan() {
   }
 
   const isOwner = me?.role !== "member";
-  const activeKey = readGeminiKeyLocal() || me?.geminiApiKey;
+  const activeCount = getAllGeminiKeys().length;
 
   return (
     <div className="max-w-lg mx-auto space-y-4 py-2">
@@ -327,16 +350,17 @@ function Pengaturan() {
         </div>
       )}
 
-      {/* Kunci AI Pribadi */}
+      {/* Kunci AI Pribadi — Key Rotation */}
       <div className="rounded-2xl neu p-4">
-        <h2 className="font-semibold text-sm flex items-center gap-2 mb-2">
+        <h2 className="font-semibold text-sm flex items-center gap-2 mb-1">
           <KeyRound size={16} /> Kunci AI Pribadi (BYOK)
         </h2>
+        <p className="text-xs text-muted-foreground mb-1">
+          Masukkan hingga <b>3 API Key</b> Gemini. Jika key pertama terkena limit, app otomatis
+          pakai key berikutnya.
+        </p>
         <p className="text-xs text-muted-foreground mb-3">
-          Tempel Google Gemini API Key milik Anda. Format{" "}
-          <code className="font-mono bg-muted px-1 rounded">AQ...</code> atau{" "}
-          <code className="font-mono bg-muted px-1 rounded">AIza...</code>.
-          Dapatkan gratis di{" "}
+          Dapatkan key gratis (bisa buat banyak) di{" "}
           <a
             href="https://aistudio.google.com/apikey"
             target="_blank"
@@ -347,47 +371,72 @@ function Pengaturan() {
           </a>
           .
         </p>
-        <div className="relative">
-          <input
-            value={key}
-            onChange={(e) => setKey(e.target.value)}
-            type={show ? "text" : "password"}
-            placeholder="Tempel API key Anda di sini..."
-            className="w-full rounded-lg neu-inset px-3 py-2 pr-10 text-sm font-mono"
-          />
-          <button
-            type="button"
-            onClick={() => setShow((v) => !v)}
-            className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground p-1"
-          >
-            {show ? <EyeOff size={16} /> : <Eye size={16} />}
-          </button>
+
+        <div className="space-y-3">
+          {([0, 1, 2] as const).map((idx) => (
+            <div key={idx}>
+              <label className="text-xs text-muted-foreground mb-1 flex items-center gap-1">
+                <Plus size={10} className="opacity-50" />
+                Key {idx + 1}{" "}
+                {idx === 0 ? (
+                  <span className="text-primary font-semibold">(Utama)</span>
+                ) : (
+                  <span className="opacity-50">(Cadangan)</span>
+                )}
+              </label>
+              <div className="relative">
+                <input
+                  value={keys[idx]}
+                  onChange={(e) => updateKey(idx, e.target.value)}
+                  type={showKey[idx] ? "text" : "password"}
+                  placeholder={
+                    idx === 0
+                      ? "Wajib diisi untuk aktifkan fitur AI"
+                      : "Opsional — cadangan jika key utama limit"
+                  }
+                  className="w-full rounded-lg neu-inset px-3 py-2 pr-10 text-sm font-mono"
+                />
+                <button
+                  type="button"
+                  onClick={() => toggleShow(idx)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground p-1"
+                >
+                  {showKey[idx] ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+              </div>
+            </div>
+          ))}
         </div>
-        <div className="mt-3 flex items-center gap-2">
+
+        <div className="mt-4 flex items-center gap-2">
           <button
-            onClick={saveGeminiKey}
+            onClick={saveAllKeys}
             disabled={savingKey}
             className="rounded-xl bg-primary text-primary-foreground px-4 py-2 text-sm font-semibold flex items-center gap-2 disabled:opacity-50"
           >
-            <Save size={14} /> {savingKey ? "Menyimpan..." : "Simpan Kunci AI"}
+            <Save size={14} /> {savingKey ? "Menyimpan..." : "Simpan Semua Key"}
           </button>
-          {activeKey && (
+          {activeCount > 0 && (
             <button
-              onClick={clearGeminiKey}
+              onClick={clearAllKeys}
               disabled={savingKey}
               className="rounded-xl border border-destructive/40 text-destructive px-3 py-2 text-sm font-semibold flex items-center gap-1.5 hover:bg-destructive/10 transition disabled:opacity-50"
             >
-              <X size={14} /> Hapus Key
+              <X size={14} /> Hapus Semua
             </button>
           )}
         </div>
-        {activeKey ? (
+
+        {activeCount > 0 ? (
           <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-2">
-            ✓ Kunci aktif ({activeKey.slice(0, 8)}...). Digunakan untuk semua fitur AI.
+            ✓ {activeCount} kunci aktif.{" "}
+            {activeCount > 1
+              ? `Rotasi otomatis aktif — jika key 1 limit, otomatis ke key 2${activeCount > 2 ? " & 3" : ""}.`
+              : "Tambah key cadangan untuk rotasi otomatis."}
           </p>
         ) : (
           <p className="text-xs text-amber-500 mt-2">
-            ⚠ Belum ada kunci aktif. Isi dan simpan key di atas.
+            ⚠ Belum ada kunci aktif. Isi minimal Key 1 dan simpan.
           </p>
         )}
       </div>
@@ -440,7 +489,11 @@ function Pengaturan() {
             </div>
             <div className="flex gap-2">
               <button
-                onClick={() => { setShowResetModal(false); setResetConfirmInput(""); setResetError(""); }}
+                onClick={() => {
+                  setShowResetModal(false);
+                  setResetConfirmInput("");
+                  setResetError("");
+                }}
                 className="px-4 py-2 rounded-xl neu text-xs font-semibold"
               >
                 Batal
