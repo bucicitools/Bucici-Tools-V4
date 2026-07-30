@@ -4,12 +4,12 @@
 //   1. User's personal key from localStorage (bucici_gemini_key_1/_2/_3)
 //   2. Developer's centralized key (VITE_GEMINI_API_KEY)
 //
+// All keys are tried in order. If a key returns 429, the next key is tried.
+// Only after ALL keys are exhausted is an error thrown.
+//
 // Key format detection:
 //   AQ.Ab... → x-goog-api-key header  (new Google Auth Key format, 2026+)
 //   AIzaSy... → ?key= query param     (legacy format, still works)
-//
-// On 429 from centralized key → throw special error to prompt user to add personal key
-// On 429 from personal key    → friendly rate limit message
 
 import { currentUser } from "@/lib/store";
 
@@ -29,7 +29,6 @@ export function getPersonalKeys(): string[] {
     const k = localStorage.getItem(slot)?.trim();
     if (k) keys.push(k);
   }
-  // Legacy single-slot support
   if (keys.length === 0) {
     const legacy = localStorage.getItem(LS_KEY_LEGACY)?.trim();
     if (legacy) keys.push(legacy);
@@ -45,13 +44,19 @@ function getDevKey(): string | undefined {
   return envKey?.trim() || undefined;
 }
 
-/** Returns all available keys: personal keys first, then dev key as fallback. */
+/**
+ * Returns all available keys in priority order:
+ * personal keys first, then dev key as final fallback.
+ * This means even if personal key hits 429, dev key is still tried.
+ */
 export function getAllGeminiKeys(): Array<{ key: string; isPersonal: boolean }> {
-  const personal = getPersonalKeys().map((k) => ({ key: k, isPersonal: true }));
-  if (personal.length > 0) return personal;
+  const result: Array<{ key: string; isPersonal: boolean }> = [];
+  for (const k of getPersonalKeys()) {
+    result.push({ key: k, isPersonal: true });
+  }
   const dev = getDevKey();
-  if (dev) return [{ key: dev, isPersonal: false }];
-  return [];
+  if (dev) result.push({ key: dev, isPersonal: false });
+  return result;
 }
 
 /** Returns the primary key (for UI checks). */
@@ -115,19 +120,19 @@ function sleep(ms: number): Promise<void> {
 // ─── Special error types ──────────────────────────────────────────────────────
 
 export class GeminiQuotaExhaustedError extends Error {
-  readonly isPersonalKey: boolean;
-  constructor(isPersonalKey: boolean) {
+  readonly hasPersonalKey: boolean;
+  constructor(hasPersonalKey: boolean) {
     super(
-      isPersonalKey
-        ? "API key pribadi Anda kena rate limit. Tunggu beberapa menit lalu coba lagi."
+      hasPersonalKey
+        ? "Semua API key kena rate limit. Tunggu beberapa menit lalu coba lagi."
         : "Server AI sedang padat. Masukkan API key pribadi di Pengaturan → Kunci AI Pribadi untuk tetap bisa generate.",
     );
     this.name = "GeminiQuotaExhaustedError";
-    this.isPersonalKey = isPersonalKey;
+    this.hasPersonalKey = hasPersonalKey;
   }
 }
 
-// ─── Text generation with key rotation ───────────────────────────────────────
+// ─── Text generation with full key rotation ───────────────────────────────────
 
 export async function askGemini(prompt: string, system?: string): Promise<string> {
   const keys = getAllGeminiKeys();
@@ -142,19 +147,19 @@ export async function askGemini(prompt: string, system?: string): Promise<string
   };
 
   for (let i = 0; i < keys.length; i++) {
-    const { key, isPersonal } = keys[i];
+    const { key } = keys[i];
     const { url, headers } = buildRequest(`${BASE}/${TEXT_MODEL}:generateContent`, key);
 
     const res = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
 
     if (res.status === 429) {
-      // If more keys available, wait briefly and try next
+      // Try next key if available
       if (i < keys.length - 1) {
-        await sleep(1000);
+        await sleep(500);
         continue;
       }
-      // All keys exhausted
-      throw new GeminiQuotaExhaustedError(isPersonal);
+      // All keys exhausted — show appropriate message
+      throw new GeminiQuotaExhaustedError(hasPersonalKey());
     }
 
     if (!res.ok) {
